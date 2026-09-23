@@ -109,7 +109,7 @@ fn install(sink: Option<Sink>, extra: Option<Box<dyn log::Log>>) -> Result<(), S
         .map(|()| log::set_max_level(level))
         .map_err(|_| "a logger was already installed".to_owned())?;
     log::info!(
-        "Concat {} · {} {} · {level}",
+        "Imperija Studio {} · {} {} · {level}",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
         std::env::consts::ARCH,
