@@ -1,0 +1,17 @@
+# Probna izgradnja za Imperija Studio.
+#
+# Poziva uzvodni build-app.yml i ostavlja gotove fajlove kao artefakte,
+# bez objavljivanja izdanja. Sluzi da se izmjena vidi u pravom programu,
+# a da se ne gradi na racunaru - 68 000 linija Rusta trazi vise memorije
+# nego sto obicna masina ima.
+#
+# Pokrece se rucno: Actions -> Proba -> Run workflow.
+
+name: Proba
+
+on:
+  workflow_dispatch:
+
+jobs:
+  app:
+    uses: ./.github/workflows/build-app.yml
