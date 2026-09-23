@@ -121,22 +121,21 @@ export global Dark {
 
     // accents
     //
-    // Lime, not blue. The two places that carry the look are the selection
-    // highlight and every activated tool, and both are lime; making it the
-    // one accent as well says the same thing with one token instead of three.
+    // Roza brenda, ne limeta. Dva mjesta nose izgled - oznaka izbora i svaki
+    // ukljucen alat - i oba su u boji brenda; isti token nosi i akcenat.
     //
     // It is legible against near-black and near-white alike, which is what a
     // selection has to be: it lands on whatever happens to be underneath it.
     // What sits *on* it therefore has to be dark ink, and fixed — see
     // `on-accent` below.
-    out property <color> accent: #cbf53f;
-    out property <color> accent-hover: #d9ff63;
-    out property <color> accent-soft: #cbf53f33;   // rgb(203 245 63 / 0.2)
-    out property <color> green: #30d158;
+    out property <color> accent: #ff7ce0;
+    out property <color> accent-hover: #ffa0e9;
+    out property <color> accent-soft: #ff7ce033;   // rgb(255 124 224 / 0.2)
+    out property <color> green: #4ee59a;
     // Ink for text and glyphs sitting ON the accent. A bright accent needs a
     // dark one; a dark accent would want #ffffff here instead.
-    out property <color> on-accent: #15220a;
-    out property <color> on-green: #06210f;
+    out property <color> on-accent: #2a0a22;
+    out property <color> on-green: #06231a;
 
     // The Rail's dragger — the raised chip you push along a hairline rail, as
     // distinct from the Fader's flat bar. It is a light chip and not the

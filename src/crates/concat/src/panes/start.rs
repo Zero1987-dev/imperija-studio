@@ -52,7 +52,7 @@ impl Default for StartPane {
             // A phone has no desk: its projects live at the top of the
             // folder the file manager shows for the app.
             location: home_folder(if cfg!(target_os = "android") {
-                "Concat"
+                "Imperija Studio"
             } else {
                 "Desktop/Concat"
             }),

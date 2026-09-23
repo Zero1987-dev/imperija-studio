@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 
 /// The app identifier, which is also the folder name everywhere.
-pub const IDENTIFIER: &str = "app.concat.editor";
+pub const IDENTIFIER: &str = "com.tiktokimperija.imperijastudio";
 
 /// The app's own directories on this machine.
 #[derive(Clone, Debug)]

@@ -207,7 +207,7 @@ pub fn report_startup_failure(error: &str) {
         }
         rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Error)
-            .set_title("Concat")
+            .set_title("Imperija Studio")
             .set_description(description)
             .set_buttons(rfd::MessageButtons::Ok)
             .show();
