@@ -577,7 +577,10 @@ jobs:
           owner=$(stat -c '%u:%g' /pkg)
           useradd -m builder
           chown -R builder:builder /pkg
-          su builder -c "env CONCAT_VERSION='$CONCAT_VERSION' CONCAT_STAGE=/pkg/stage PKGDEST=/pkg makepkg --noconfirm --nodeps"
+          # PKGEXT izricito: Arch Linux ARM slika ima drugu zadanu kompresiju,
+          # pa je makepkg pravio .pkg.tar.xz dok je mv ispod trazio .zst i
+          # izgradnja za aarch64 je padala na zadnjem koraku.
+          su builder -c "env CONCAT_VERSION='$CONCAT_VERSION' CONCAT_STAGE=/pkg/stage PKGDEST=/pkg PKGEXT='.pkg.tar.zst' makepkg --noconfirm --nodeps"
           chown -R "$owner" /pkg
           SCRIPT
           chmod 755 "$work/build.sh"
@@ -585,6 +588,9 @@ jobs:
           docker run --rm --env CONCAT_VERSION="$pkgver" \
             -v "$work:/pkg" -w /pkg "$image" /pkg/build.sh
 
+          # Ako mv ipak ne nadje paket, iz ovog ispisa se vidi sta je makepkg
+          # stvarno napravio, umjesto da se pogadja po drugi put.
+          ls -la "$work"
           mv "$work"/concat-*.pkg.tar.zst "stage/$name.pkg.tar.zst"
           rm -rf "$work"
           ls -l stage
