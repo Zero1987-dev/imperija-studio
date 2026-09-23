@@ -3,8 +3,8 @@ name: Build for phones
 # Builds Concat for Android and iOS and uploads one artifact per phone,
 # named like the desktop bundles from build-app.yml:
 #
-#   Android  arm64  -> Concat-<version>-android-arm64.apk
-#   iOS      arm64  -> Concat-<version>-ios-arm64.ipa
+#   Android  arm64  -> Imperija-Studio-<version>-android-arm64.apk
+#   iOS      arm64  -> Imperija-Studio-<version>-ios-arm64.ipa
 #
 # Reusable, the way build-app.yml is: release.yml calls it on every tag,
 # so a release carries the phones beside the desktops. Pull requests build
@@ -156,7 +156,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir stage
-          cp src/target/release/apk/Concat.apk "stage/Concat-$VERSION-android-arm64.apk"
+          cp src/target/release/apk/Concat.apk "stage/Imperija-Studio-$VERSION-android-arm64.apk"
           ls -l stage
 
       - uses: actions/upload-artifact@v7
@@ -250,7 +250,7 @@ jobs:
           set -euo pipefail
           mkdir -p stage payload/Payload
           cp -R src/target/aarch64-apple-ios/release/Concat.app payload/Payload/
-          (cd payload && ditto -c -k --keepParent Payload "../stage/Concat-$VERSION-ios-arm64.ipa")
+          (cd payload && ditto -c -k --keepParent Payload "../stage/Imperija-Studio-$VERSION-ios-arm64.ipa")
           ls -l stage
 
       - uses: actions/upload-artifact@v7

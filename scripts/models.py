@@ -52,22 +52,22 @@ TABLES = {
 # version to fill in. Installers and binaries, never an archive of a
 # folder - a person downloads the thing they run.
 BUNDLES = [
-    ("macos", "arm64", "dmg", "Concat-{v}-macos-arm64.dmg"),
-    ("macos", "x86_64", "dmg", "Concat-{v}-macos-x86_64.dmg"),
-    ("linux", "x86_64", "deb", "Concat-{v}-linux-x86_64.deb"),
-    ("linux", "x86_64", "rpm", "Concat-{v}-linux-x86_64.rpm"),
-    ("linux", "x86_64", "appimage", "Concat-{v}-linux-x86_64.AppImage"),
-    ("linux", "x86_64", "pacman", "Concat-{v}-linux-x86_64.pkg.tar.zst"),
-    ("linux", "aarch64", "deb", "Concat-{v}-linux-aarch64.deb"),
-    ("linux", "aarch64", "rpm", "Concat-{v}-linux-aarch64.rpm"),
-    ("linux", "aarch64", "appimage", "Concat-{v}-linux-aarch64.AppImage"),
-    ("linux", "aarch64", "pacman", "Concat-{v}-linux-aarch64.pkg.tar.zst"),
-    ("windows", "x86_64", "setup", "Concat-{v}-windows-x86_64-setup.exe"),
-    ("windows", "x86_64", "msi", "Concat-{v}-windows-x86_64.msi"),
-    ("windows", "aarch64", "setup", "Concat-{v}-windows-aarch64-setup.exe"),
-    ("windows", "aarch64", "msi", "Concat-{v}-windows-aarch64.msi"),
-    ("android", "arm64", "apk", "Concat-{v}-android-arm64.apk"),
-    ("ios", "arm64", "ipa", "Concat-{v}-ios-arm64.ipa"),
+    ("macos", "arm64", "dmg", "Imperija-Studio-{v}-macos-arm64.dmg"),
+    ("macos", "x86_64", "dmg", "Imperija-Studio-{v}-macos-x86_64.dmg"),
+    ("linux", "x86_64", "deb", "Imperija-Studio-{v}-linux-x86_64.deb"),
+    ("linux", "x86_64", "rpm", "Imperija-Studio-{v}-linux-x86_64.rpm"),
+    ("linux", "x86_64", "appimage", "Imperija-Studio-{v}-linux-x86_64.AppImage"),
+    ("linux", "x86_64", "pacman", "Imperija-Studio-{v}-linux-x86_64.pkg.tar.zst"),
+    ("linux", "aarch64", "deb", "Imperija-Studio-{v}-linux-aarch64.deb"),
+    ("linux", "aarch64", "rpm", "Imperija-Studio-{v}-linux-aarch64.rpm"),
+    ("linux", "aarch64", "appimage", "Imperija-Studio-{v}-linux-aarch64.AppImage"),
+    ("linux", "aarch64", "pacman", "Imperija-Studio-{v}-linux-aarch64.pkg.tar.zst"),
+    ("windows", "x86_64", "setup", "Imperija-Studio-{v}-windows-x86_64-setup.exe"),
+    ("windows", "x86_64", "msi", "Imperija-Studio-{v}-windows-x86_64.msi"),
+    ("windows", "aarch64", "setup", "Imperija-Studio-{v}-windows-aarch64-setup.exe"),
+    ("windows", "aarch64", "msi", "Imperija-Studio-{v}-windows-aarch64.msi"),
+    ("android", "arm64", "apk", "Imperija-Studio-{v}-android-arm64.apk"),
+    ("ios", "arm64", "ipa", "Imperija-Studio-{v}-ios-arm64.ipa"),
 ]
 
 
