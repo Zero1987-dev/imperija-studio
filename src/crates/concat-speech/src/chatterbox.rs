@@ -625,8 +625,7 @@ pub fn bundle_dir(models: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    const UPSTREAM: &str =
-        "https://huggingface.co/ResembleAI/chatterbox-turbo-ONNX/resolve/main/";
+    const UPSTREAM: &str = "https://huggingface.co/ResembleAI/chatterbox-turbo-ONNX/resolve/main/";
 
     #[test]
     fn the_table_names_nine_distinct_files_with_the_bundle_in_front() {
