@@ -45,6 +45,7 @@ pub mod brush;
 pub mod enhance;
 pub mod mask;
 pub mod models;
+pub mod reframe;
 #[cfg(feature = "infer")]
 pub mod runtime;
 #[cfg(feature = "infer")]
