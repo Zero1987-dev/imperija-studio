@@ -48,6 +48,8 @@ pub struct Host {
     pub brushes: Arc<concat_host::Brushes>,
     /// The restoration model, and the enhanced copies it writes.
     pub enhancers: Arc<concat_host::Enhancers>,
+    /// Reframing a wide clip to a tall one, following the speaker.
+    pub reframers: Arc<concat_host::Reframers>,
     /// The Concat API on a socket, while the Remote page has it on. Its
     /// own sessions, apart from the window's: a caller edits projects of
     /// its own, never the one on screen, which `open_projects` keeps it
@@ -71,6 +73,7 @@ impl Host {
             cutouts: Arc::new(concat_host::Cutouts::new(&dirs.data)),
             brushes: Arc::new(concat_host::Brushes::new(&dirs.data)),
             enhancers: Arc::new(concat_host::Enhancers::new(&dirs.data)),
+            reframers: Arc::new(concat_host::Reframers::new(&dirs.data)),
             dirs,
             playback: Playback::start(Arc::new(Events))?,
             monitor: match gpu {

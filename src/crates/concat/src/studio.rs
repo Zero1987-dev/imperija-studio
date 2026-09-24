@@ -772,6 +772,9 @@ pub struct Studio {
     /// Enhance at work, by clip id: whether the model is still
     /// downloading, and how far along. One at a time, like every long job.
     enhance_jobs: HashMap<String, (bool, f32)>,
+    /// Reframes under way, by clip: whether a model is still coming
+    /// down, and how far along it is.
+    reframe_jobs: HashMap<String, (bool, f32)>,
     /// The smart stroke being read, by the same name, while one is.
     region_job: Option<String>,
     /// The last smart stroke as the stage drew it, kept on screen from the
@@ -1467,6 +1470,7 @@ impl Studio {
             painting: true,
             cutout_jobs: HashMap::new(),
             enhance_jobs: HashMap::new(),
+            reframe_jobs: HashMap::new(),
             region_job: None,
             pending_stroke: None,
             host,
@@ -4792,6 +4796,133 @@ impl Studio {
         );
     }
 
+    /// Reframes clip `id`: reads it through, finds the speaker, and puts
+    /// the zoom and pan keys that keep them in the middle of a tall frame.
+    ///
+    /// The keys go on as one undo step, replacing whatever was on those
+    /// three properties. Nothing else about the clip is touched, so a
+    /// reframe that went wrong is undone like any other edit, and one that
+    /// went nearly right is dragged into place in the Keyframes tab.
+    pub fn reframe_clip(&mut self, id: &str) {
+        if !self.reframe_jobs.is_empty() || self.host.reframers.is_busy() {
+            self.notify(&t("A reframe is already at work; one clip at a time"), true);
+            return;
+        }
+        let Some(clip) = self.clip(id).cloned() else {
+            return;
+        };
+        if clip.kind != model::ClipKind::Video {
+            self.notify(&t("Select a video clip on the timeline first"), true);
+            return;
+        }
+        let Some(media) = self
+            .project()
+            .media
+            .iter()
+            .find(|item| item.id == clip.media_id)
+            .cloned()
+        else {
+            return;
+        };
+        let (width, height) = (media.width.unwrap_or(0), media.height.unwrap_or(0));
+        if width == 0 || height == 0 {
+            self.notify(&t("This file has no picture to reframe"), true);
+            return;
+        }
+        let video = &self.timeline().video;
+        if video.height == 0 {
+            return;
+        }
+        let request = concat_host::ReframeRequest {
+            media_path: media.path.clone(),
+            start: clip.source_start,
+            // Timeline seconds are source seconds divided by the rate, so
+            // the source span a slowed clip covers is the shorter one.
+            duration: (clip.duration * clip.speed.max(0.01)).max(0.0),
+            source_aspect: f64::from(width) / f64::from(height),
+            frame_aspect: f64::from(video.width) / f64::from(video.height),
+        };
+        let clip_id = clip.id.clone();
+        self.reframe_jobs.insert(clip_id.clone(), (false, 0.0));
+        self.notify(&tf("Following the face in {0}", &[&media.name]), false);
+
+        let reframers = Arc::clone(&self.host.reframers);
+        let epoch = crate::host::project_epoch();
+        spawn_in_project(
+            move || {
+                let mut last = (false, -1.0f32);
+                let reporting = clip_id.clone();
+                let result = reframers.reframe(&request, &mut |progress| {
+                    let now = match progress {
+                        concat_host::reframe::Progress::Fetching { received, total } => {
+                            (true, received as f32 / total.max(1) as f32)
+                        }
+                        concat_host::reframe::Progress::Analysing(fraction) => (false, fraction),
+                    };
+                    if now.0 != last.0 || now.1 - last.1 >= 0.01 {
+                        last = now;
+                        let id = reporting.clone();
+                        on_ui_in_project(epoch, move |studio, _, _| {
+                            if let Some(held) = studio.reframe_jobs.get_mut(&id) {
+                                *held = now;
+                            }
+                        });
+                    }
+                });
+                (clip_id, result)
+            },
+            |studio, _, _, (clip_id, result)| {
+                studio.reframe_jobs.remove(&clip_id);
+                match result {
+                    Ok(keys) if keys.is_empty() => {
+                        studio.notify(&t("No face was found in this clip"), true);
+                    }
+                    Ok(keys) => studio.adopt_reframe(&clip_id, &keys),
+                    Err(error) if error.contains("cancelled") => {}
+                    Err(error) => studio.notify(&tf("Reframe: {0}", &[&error]), true),
+                }
+            },
+        );
+    }
+
+    /// Puts a reframe's keys on clip `id` as one undo step: the three
+    /// properties it drives are cleared first, so a second reframe replaces
+    /// the first rather than fighting it.
+    fn adopt_reframe(&mut self, id: &str, keys: &[concat_host::ReframeKey]) {
+        use model::KeyProperty::{OffsetX, OffsetY, Scale};
+        let Some(clip) = self.clip(id).cloned() else {
+            return;
+        };
+        let mut commands = Vec::new();
+        for property in [Scale, OffsetX, OffsetY] {
+            if clip.keys_on(property).next().is_some() {
+                commands.push(Command::ClearClipKeys {
+                    clip_id: id.to_owned(),
+                    property,
+                });
+            }
+        }
+        for key in keys {
+            for (property, value) in [
+                (Scale, key.shot.scale),
+                (OffsetX, key.shot.offset_x),
+                (OffsetY, key.shot.offset_y),
+            ] {
+                commands.push(Command::SetClipKey {
+                    clip_id: id.to_owned(),
+                    property,
+                    at: key.at,
+                    value,
+                    ease: model::KeyEase::default(),
+                });
+            }
+        }
+        if !commands.is_empty() {
+            self.apply(Command::Batch { commands });
+        }
+        self.notify(&tf("Reframed: {0} keys", &[&keys.len()]), false);
+    }
+
     /// Points clip `id` at the enhanced copy at `path`, probed the way an
     /// import is, and shows it.
     fn adopt_enhanced(&mut self, id: &str, path: &std::path::Path) {
@@ -7384,6 +7515,16 @@ impl Studio {
                     && (clip.kind == model::ClipKind::Video || clip.kind == model::ClipKind::Image)
                     && self.enhance_jobs.is_empty(),
             ),
+            // The camera made to follow whoever is talking, so a wide shot
+            // becomes a tall one without a keyframe per lean. Video only -
+            // a still has nobody to follow - and greyed while one runs.
+            action(
+                "reframe",
+                t("Follow the face"),
+                Glyph::Frame,
+                "",
+                !locked && clip.kind == model::ClipKind::Video && self.reframe_jobs.is_empty(),
+            ),
             rule(),
         ];
         // One slot, two verbs: the sound is either on its picture or off it.
@@ -7961,6 +8102,7 @@ impl Studio {
             }
             "freeze" => self.freeze_at_playhead(),
             "enhance" => self.enhance_clip(id),
+            "reframe" => self.reframe_clip(id),
             "render-sound" => self.render_clip_sound(id),
             "detach" => {
                 self.apply(Command::DetachAudio {
