@@ -26,6 +26,7 @@ import { ModelData, SettingsData, SettingsDialog, SystemFactData } from "dialogs
 import { ProjectDialog, ProjectSheetData } from "dialogs/project.slint";
 import { RelinkDialog, RelinkData, MissingMediaItem } from "dialogs/relink.slint";
 import { CaptionsDialog, CaptionsSheetData } from "dialogs/captions.slint";
+import { DownloaderDialog, DownloaderSheetData } from "dialogs/downloader.slint";
 import { SpeechDialog, SpeechSheetData } from "dialogs/speech.slint";
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { Editor } from "editor.slint";
@@ -102,7 +103,8 @@ export component App inherits Window {
         }
     }
     property <bool> sheet-open: root.export.open || root.settings.open
-        || root.project-sheet.open || root.captions.open || root.speech.open;
+        || root.project-sheet.open || root.captions.open || root.speech.open
+        || root.downloader.open;
     changed sheet-open => {
         if (!root.sheet-open) {
             keys.focus();
@@ -240,6 +242,8 @@ export component App inherits Window {
     /// words - or any words - read aloud. Their option lists come from what
     /// is installed, so they are handed over as models.
     in property <CaptionsSheetData> captions;
+    /// The Video Downloader sheet: a link and what to make of it.
+    in property <DownloaderSheetData> downloader;
     in property <[string]> caption-models;
     callback captions-closed();
     callback captions-text-edited(text: string);
@@ -248,6 +252,13 @@ export component App inherits Window {
     callback captions-size-changed(index: int);
     callback captions-begin();
     callback captions-cancel();
+    callback downloader-closed();
+    callback downloader-url-edited(text: string);
+    callback downloader-quality-changed(index: int);
+    callback downloader-fps-changed(index: int);
+    callback downloader-wanted-changed(index: int);
+    callback downloader-begin();
+    callback downloader-cancel();
 
     in property <SpeechSheetData> speech;
     in property <[string]> speech-models;
@@ -606,6 +617,22 @@ export component App inherits Window {
         size-changed(index) => { root.captions-size-changed(index); }
         begin => { root.captions-begin(); }
         cancel => { root.captions-cancel(); }
+    }
+
+    DownloaderDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        data: root.downloader;
+
+        closed => { root.downloader-closed(); }
+        url-changed(text) => { root.downloader-url-edited(text); }
+        quality-changed(index) => { root.downloader-quality-changed(index); }
+        fps-changed(index) => { root.downloader-fps-changed(index); }
+        wanted-changed(index) => { root.downloader-wanted-changed(index); }
+        begin => { root.downloader-begin(); }
+        cancel => { root.downloader-cancel(); }
     }
 
     SpeechDialog {

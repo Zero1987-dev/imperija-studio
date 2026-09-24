@@ -95,6 +95,20 @@ pub enum Progress {
     Merging,
 }
 
+/// What is being taken from the page.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Wanted {
+    /// The picture with its sound.
+    #[default]
+    Video,
+    /// The sound alone, left in whatever the site serves - usually m4a or
+    /// webm. Nothing is re-encoded, so nothing is lost and it is instant.
+    Audio,
+    /// The sound alone, turned into an MP3. Needs ffmpeg on the machine;
+    /// [`Downloads::can_convert`] says whether it is there.
+    AudioMp3,
+}
+
 /// What one fetch covers.
 #[derive(Clone, Debug)]
 pub struct FetchRequest {
@@ -105,8 +119,54 @@ pub struct FetchRequest {
     /// Refuse TikTok's watermarked copy. On for everything; it costs
     /// nothing where the fields do not exist.
     pub clean: bool,
-    /// Sound only, as an m4a.
-    pub audio_only: bool,
+    /// Picture, sound, or sound as an MP3.
+    pub wanted: Wanted,
+    /// The tallest picture to take, in pixels; 0 for whatever is best.
+    /// 2160 is 4K, 1080 and 720 the usual two below it.
+    pub max_height: u32,
+    /// The most frames a second to take; 0 for whatever is best. A site
+    /// that only has 60 still answers with it when 30 is asked for and
+    /// nothing else exists - see [`format_for`].
+    pub max_fps: u32,
+}
+
+impl Default for FetchRequest {
+    fn default() -> FetchRequest {
+        FetchRequest {
+            url: String::new(),
+            into: PathBuf::new(),
+            clean: true,
+            wanted: Wanted::Video,
+            max_height: 0,
+            max_fps: 0,
+        }
+    }
+}
+
+/// The format rule for a request, in yt-dlp's own language.
+///
+/// Read left to right, `/` meaning "or else". The first choice is the best
+/// picture within the limits joined to the best sound; the second is a
+/// single file within the limits, which is what the sites that serve one
+/// file offer; the last is the best of anything, so a video that has no
+/// 1080p copy comes down at whatever it does have rather than failing. A
+/// limit is a ceiling, never a demand.
+pub fn format_for(request: &FetchRequest) -> String {
+    let clean = if request.clean { CLEAN_TIKTOK } else { "" };
+    if request.wanted != Wanted::Video {
+        return format!("ba{clean}/b{clean}/ba/b");
+    }
+    let mut limits = String::new();
+    if request.max_height > 0 {
+        limits.push_str(&format!("[height<={}]", request.max_height));
+    }
+    if request.max_fps > 0 {
+        limits.push_str(&format!("[fps<={}]", request.max_fps));
+    }
+    // Every choice carries the watermark rule, the last one included: a
+    // silently watermarked video is worse than a download that says it
+    // found nothing clean.
+    format!("bv*{limits}{clean}+ba/b{limits}{clean}/bv*{clean}+ba/b{clean}")
 }
 
 /// The fetching service: where the tool lives, and the one-job slot.
@@ -191,6 +251,12 @@ impl Downloads {
         Ok(file)
     }
 
+    /// Whether MP3 is on offer: yt-dlp converts through ffmpeg, and asking
+    /// for it without one fails after the download rather than before it.
+    pub fn can_convert(&self) -> bool {
+        which("ffmpeg").is_some()
+    }
+
     /// Runs the tool's own updater, which checks the new version itself.
     ///
     /// The pin in [`TOOL_VERSION`] is what a first install is checked
@@ -220,14 +286,7 @@ impl Downloads {
         std::fs::create_dir_all(&request.into)
             .map_err(|error| format!("could not create {}: {error}", request.into.display()))?;
 
-        let clean = if request.clean { CLEAN_TIKTOK } else { "" };
-        let format = if request.audio_only {
-            format!("ba{clean}/b{clean}/ba/b")
-        } else {
-            // Best picture with best sound, then any single file that has
-            // both: the second is what the sites that serve one file offer.
-            format!("bv*{clean}+ba/b{clean}/bv*+ba/b")
-        };
+        let format = format_for(request);
         let template = request
             .into
             .join("%(title).80B [%(id)s].%(ext)s")
@@ -246,6 +305,17 @@ impl Downloads {
             .arg("--newline")
             .arg("--no-colors")
             .args(["-f", &format])
+            .args(match request.wanted {
+                // Nothing to convert: whatever the site serves is kept.
+                Wanted::Video | Wanted::Audio => Vec::new(),
+                Wanted::AudioMp3 => vec![
+                    "--extract-audio".to_owned(),
+                    "--audio-format".to_owned(),
+                    "mp3".to_owned(),
+                    "--audio-quality".to_owned(),
+                    "0".to_owned(),
+                ],
+            })
             .args(["-o", &template])
             // `--print` alone would only pretend to download; with this it
             // downloads and then says where the file went, which beats
@@ -257,6 +327,20 @@ impl Downloads {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| format!("could not run the downloader: {error}"))?;
+
+        // Read on a thread of its own, never after the wait. A pipe holds
+        // about sixty kilobytes; once it is full the tool blocks writing
+        // its next warning, and a caller that reads only after the process
+        // exits is then waiting for a process that is waiting for it.
+        // YouTube alone warns enough to fill it, and the download simply
+        // stops - which is what it did.
+        let stderr = child.stderr.take().ok_or("the downloader said nothing")?;
+        let complaints = std::thread::spawn(move || {
+            BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+                .collect::<Vec<String>>()
+        });
 
         let stdout = child.stdout.take().ok_or("the downloader said nothing")?;
         let mut landed: Option<PathBuf> = None;
@@ -279,22 +363,19 @@ impl Downloads {
         let status = child
             .wait()
             .map_err(|error| format!("the downloader did not finish: {error}"))?;
+        let said = complaints.join().unwrap_or_default();
+        for line in &said {
+            log::warn!("download: {line}");
+        }
         if !status.success() {
-            let mut why = String::new();
-            if let Some(mut err) = child.stderr.take() {
-                use std::io::Read;
-                let _ = err.read_to_string(&mut why);
-            }
-            let why = why
-                .lines()
+            // The last ERROR line is the one that stopped it; any above are
+            // usually a format it tried first and could not have.
+            let why = said
+                .iter()
                 .rev()
-                .find(|l| l.contains("ERROR"))
-                .unwrap_or("");
-            return Err(if why.is_empty() {
-                "the download failed".to_owned()
-            } else {
-                why.trim().to_owned()
-            });
+                .find(|line| line.contains("ERROR"))
+                .map(|line| line.trim().to_owned());
+            return Err(why.unwrap_or_else(|| "the download failed".to_owned()));
         }
         landed.ok_or_else(|| "the download finished but left no file".to_owned())
     }
@@ -364,6 +445,56 @@ mod tests {
         assert_eq!(percent_of("[download] Destination: video.mp4"), None);
         assert_eq!(percent_of("[Merger] Merging formats into \"v.mp4\""), None);
         assert_eq!(percent_of(""), None);
+    }
+
+    fn asking(wanted: Wanted, height: u32, fps: u32) -> String {
+        format_for(&FetchRequest {
+            wanted,
+            max_height: height,
+            max_fps: fps,
+            ..FetchRequest::default()
+        })
+    }
+
+    #[test]
+    fn no_limits_asks_for_the_best_there_is() {
+        let f = asking(Wanted::Video, 0, 0);
+        assert!(!f.contains("height"), "{f}");
+        assert!(!f.contains("fps"), "{f}");
+        assert!(f.starts_with("bv*"), "{f}");
+    }
+
+    #[test]
+    fn a_height_and_a_rate_become_ceilings() {
+        let f = asking(Wanted::Video, 1080, 30);
+        assert!(f.contains("[height<=1080]"), "{f}");
+        assert!(f.contains("[fps<=30]"), "{f}");
+    }
+
+    #[test]
+    fn a_video_that_has_no_such_copy_still_comes_down() {
+        // The last choice carries no limits, so 4K-only footage asked for
+        // at 720 arrives as 4K rather than as an error.
+        let f = asking(Wanted::Video, 720, 0);
+        let last = f.rsplit('/').next().expect("a last choice");
+        assert!(!last.contains("height"), "last choice is limited: {f}");
+    }
+
+    #[test]
+    fn sound_alone_asks_for_sound_and_ignores_the_picture_limits() {
+        for wanted in [Wanted::Audio, Wanted::AudioMp3] {
+            let f = asking(wanted, 1080, 60);
+            assert!(f.starts_with("ba"), "{f}");
+            assert!(!f.contains("height") && !f.contains("fps"), "{f}");
+        }
+    }
+
+    #[test]
+    fn the_watermark_rule_is_in_every_choice_that_names_a_format() {
+        let f = asking(Wanted::Video, 1080, 0);
+        for choice in f.split('/') {
+            assert!(choice.contains("format_id!*=?download"), "{choice} in {f}");
+        }
     }
 
     #[test]

@@ -60,6 +60,7 @@ use crate::i18n::{self, t, tf};
 use crate::panes::settings::installed;
 use crate::prefs::Preferences;
 use crate::presets::{self, TextPreset};
+use crate::ui::DownloaderSheetData;
 use crate::ui::*;
 
 /// The monitor's output sizes, matching the picker's rows.
@@ -775,9 +776,9 @@ pub struct Studio {
     /// Reframes under way, by clip: whether a model is still coming
     /// down, and how far along it is.
     reframe_jobs: HashMap<String, (bool, f32)>,
-    /// A link being fetched: whether the tool is still coming down,
-    /// and how far along it is. None when nothing is.
-    download_job: Option<(bool, f32)>,
+    /// The Video Downloader sheet: what is typed into it and what the
+    /// fetch it started is doing.
+    downloader: DownloaderSheet,
     /// The smart stroke being read, by the same name, while one is.
     region_job: Option<String>,
     /// The last smart stroke as the stage drew it, kept on screen from the
@@ -1474,7 +1475,7 @@ impl Studio {
             cutout_jobs: HashMap::new(),
             enhance_jobs: HashMap::new(),
             reframe_jobs: HashMap::new(),
-            download_job: None,
+            downloader: DownloaderSheet::default(),
             region_job: None,
             pending_stroke: None,
             host,
@@ -4889,36 +4890,72 @@ impl Studio {
         );
     }
 
-    /// Fetches the video at `url` into the project and puts it in the bin.
+    /// Opens the Video Downloader sheet.
+    pub fn open_downloader(&mut self) {
+        self.downloader.open = true;
+        self.downloader.message.clear();
+    }
+
+    /// Closes it. A fetch already running is left to finish - the sheet is
+    /// where it is watched, not what keeps it alive.
+    pub fn close_downloader(&mut self) {
+        self.downloader.open = false;
+    }
+
+    /// One of the sheet's controls was moved.
+    pub fn downloader_set(&mut self, field: &str, index: i32) {
+        match field {
+            "quality" => self.downloader.quality = index,
+            "fps" => self.downloader.fps = index,
+            "wanted" => self.downloader.wanted = index,
+            _ => {}
+        }
+    }
+
+    /// The address was typed into.
+    pub fn downloader_url(&mut self, url: &str) {
+        self.downloader.url = url.to_owned();
+    }
+
+    /// Asks the running fetch to stop.
+    pub fn downloader_cancel(&mut self) {
+        self.host.downloads.cancel();
+    }
+
+    /// Fetches what the sheet asks for and puts it in the bin.
     ///
     /// The file lands in the project's own `media` folder rather than a
-    /// downloads folder, so a project stays one thing to move or back up,
+    /// downloads folder, so a project stays one thing to move or back up
     /// and the clip's path does not point outside it.
-    pub fn download_video(&mut self, url: &str, audio_only: bool) {
-        let url = url.trim().to_owned();
+    pub fn downloader_begin(&mut self) {
+        let url = self.downloader.url.trim().to_owned();
         if !url.starts_with("http://") && !url.starts_with("https://") {
-            self.notify(&t("That does not look like a link"), true);
+            self.downloader.message = t("That does not look like a link");
             return;
         }
-        if self.download_job.is_some() || self.host.downloads.is_busy() {
-            self.notify(&t("A download is already running; one at a time"), true);
+        if self.downloader.running || self.host.downloads.is_busy() {
+            self.downloader.message = t("A download is already running; one at a time");
             return;
         }
         let Some(session) = self.session.as_ref() else {
-            self.notify(
-                &t("Save the project first, so the video has somewhere to live"),
-                true,
-            );
+            self.downloader.message =
+                t("Save the project first, so the video has somewhere to live");
             return;
         };
         let request = concat_host::FetchRequest {
             url,
             into: std::path::PathBuf::from(session.path()).join("media"),
             clean: true,
-            audio_only,
+            wanted: self.downloader.wanted(),
+            max_height: self.downloader.height(),
+            max_fps: self.downloader.rate(),
         };
-        self.download_job = Some((false, 0.0));
-        self.notify(&t("Fetching the video…"), false);
+        self.downloader.message.clear();
+        self.downloader.running = true;
+        // The tool is fetched before anything else, so the first report a
+        // person sees says so rather than showing a bar that sits at zero.
+        self.downloader.fetching_tool = !self.host.downloads.installed();
+        self.downloader.progress = 0.0;
 
         let downloads = Arc::clone(&self.host.downloads);
         let epoch = crate::host::project_epoch();
@@ -4936,26 +4973,31 @@ impl Studio {
                     if now.0 != last.0 || now.1 - last.1 >= 0.01 {
                         last = now;
                         on_ui_in_project(epoch, move |studio, _, _| {
-                            if studio.download_job.is_some() {
-                                studio.download_job = Some(now);
-                            }
+                            studio.downloader.fetching_tool = now.0;
+                            studio.downloader.progress = now.1;
                         });
                     }
                 })?;
                 concat_host::media::probe(&file.to_string_lossy())
             },
             |studio, _, _, result| {
-                studio.download_job = None;
+                studio.downloader.running = false;
+                studio.downloader.fetching_tool = false;
+                studio.downloader.progress = 0.0;
                 match result {
                     Ok(summary) => {
-                        let name = summary.to_new_media().name.clone();
-                        studio.apply(Command::AddMedia {
-                            item: summary.to_new_media(),
-                        });
+                        let item = summary.to_new_media();
+                        let name = item.name.clone();
+                        studio.apply(Command::AddMedia { item });
+                        studio.downloader.open = false;
+                        studio.downloader.url.clear();
                         studio.notify(&tf("{0} is in the bin", &[&name]), false);
                     }
                     Err(error) if error.contains("cancelled") => {}
-                    Err(error) => studio.notify(&tf("Download: {0}", &[&error]), true),
+                    Err(error) => {
+                        log::warn!("download: {error}");
+                        studio.downloader.message = error;
+                    }
                 }
             },
         );
@@ -7395,11 +7437,6 @@ impl Studio {
         );
         editor.set_media_selected_count(self.media.selected.len() as i32);
         editor.set_importing(false);
-        // The tool coming down and the video coming down are one bar to the
-        // person watching it; which of the two it is shows in the toast.
-        let (fetching, done) = self.download_job.unwrap_or((false, 0.0));
-        editor.set_downloading(self.download_job.is_some());
-        editor.set_download_progress(if fetching { done * 0.1 } else { done });
 
         let (width, height) = self.output_size();
         editor.set_output_width(width as i32);
@@ -7454,6 +7491,18 @@ impl Studio {
                 .collect(),
         );
         app.set_captions(self.captions.data(self));
+        app.set_downloader(DownloaderSheetData {
+            open: self.downloader.open,
+            url: self.downloader.url.as_str().into(),
+            quality: self.downloader.quality,
+            fps: self.downloader.fps,
+            wanted: self.downloader.wanted,
+            can_convert: self.host.downloads.can_convert(),
+            running: self.downloader.running,
+            fetching_tool: self.downloader.fetching_tool,
+            progress: self.downloader.progress,
+            message: self.downloader.message.as_str().into(),
+        });
         let voices = installed(&self.settings.voices);
         sync(
             &models.speech_models,
@@ -8255,6 +8304,66 @@ impl Studio {
             timeline_id: id,
             index,
         });
+    }
+}
+
+/// What the Video Downloader sheet holds between openings.
+///
+/// The choices are remembered for the session: someone cutting podcasts
+/// asks for the same thing every time, and re-picking 1080p on every link
+/// is the kind of small tax that makes a tool feel unfinished.
+#[derive(Clone, Debug, Default)]
+pub struct DownloaderSheet {
+    /// The sheet is up.
+    pub open: bool,
+    /// The address as typed.
+    pub url: String,
+    /// 0 best, 1 2160, 2 1080, 3 720, 4 480.
+    pub quality: i32,
+    /// 0 any, 1 30, 2 60.
+    pub fps: i32,
+    /// 0 video, 1 sound, 2 MP3.
+    pub wanted: i32,
+    /// A fetch is under way.
+    pub running: bool,
+    /// That fetch is still downloading the tool, not the video.
+    pub fetching_tool: bool,
+    /// `0..1`.
+    pub progress: f32,
+    /// Why the last attempt failed. Kept in the sheet rather than shown as
+    /// a toast that is gone before it has been read.
+    pub message: String,
+}
+
+impl DownloaderSheet {
+    /// The tallest picture the quality choice allows; 0 for no ceiling.
+    pub fn height(&self) -> u32 {
+        match self.quality {
+            1 => 2160,
+            2 => 1080,
+            3 => 720,
+            4 => 480,
+            _ => 0,
+        }
+    }
+
+    /// The most frames a second the choice allows; 0 for no ceiling.
+    pub fn rate(&self) -> u32 {
+        match self.fps {
+            1 => 30,
+            2 => 60,
+            _ => 0,
+        }
+    }
+
+    /// What is being taken from the page.
+    pub fn wanted(&self) -> concat_host::download::Wanted {
+        use concat_host::download::Wanted;
+        match self.wanted {
+            1 => Wanted::Audio,
+            2 => Wanted::AudioMp3,
+            _ => Wanted::Video,
+        }
     }
 }
 

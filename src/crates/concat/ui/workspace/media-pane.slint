@@ -1420,12 +1420,7 @@ export component MediaPane inherits Rectangle {
     out property <MediaFilter> filter: MediaFilter.all;
 
     callback import-media();
-    callback download-link(url: string);
-    /// What is in the link field, kept here so the Fetch button can read it.
-    in-out property <string> link-text;
-    /// A fetch is running, and how far along it is.
-    in property <bool> downloading;
-    in property <float> download-progress;
+    callback open-downloader();
     callback filter-changed(filter: MediaFilter);
     /// The sort dropdown beside the import button picked a new order.
     callback sort-changed(index: int);
@@ -1763,6 +1758,15 @@ export component MediaPane inherits Rectangle {
                             current: root.tab == 5;
                             clicked => { root.tab = 5; }
                         }
+                        // A tool, not a page: it opens a sheet and leaves
+                        // the library where it was. Every tool we add sits
+                        // here and behaves the same way.
+                        LibraryTab {
+                            glyph: Glyph.import;
+                            label: I18n.t("Video Downloader");
+                            current: false;
+                            clicked => { root.open-downloader(); }
+                        }
                     }
                 }
 
@@ -2070,49 +2074,6 @@ export component MediaPane inherits Rectangle {
                     }
                 }
 
-                // A link pasted straight into the bin. Under Import rather
-                // than beside it: the two do the same job from two places,
-                // and a row of its own leaves the field room to show a
-                // whole address instead of eliding it after ten characters.
-                if root.tab == 0: HorizontalLayout {
-                    padding-left: 8px;
-                    padding-right: 8px;
-                    padding-bottom: 8px;
-                    spacing: 6px;
-
-                    link := Field {
-                        horizontal-stretch: 1;
-                        technical: true;
-                        placeholder: I18n.t("Paste a link to a video");
-                        edited(text) => { root.link-text = text; }
-                    }
-
-                    Rectangle {
-                        horizontal-stretch: 0;
-                        width: 84px;
-                        height: 28px;
-                        border-radius: Theme.r;
-                        background: root.downloading ? Theme.well
-                            : grab.has-hover ? Theme.accent-hover : Theme.accent;
-
-                        Text {
-                            text: root.downloading
-                                ? "\{Math.round(root.download-progress * 100)}%"
-                                : I18n.t("Fetch");
-                            color: root.downloading ? Theme.fg-muted : Theme.on-accent;
-                            font-size: Theme.fs-sm;
-                            font-weight: Theme.weight-title;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-
-                        grab := TouchArea {
-                            enabled: !root.downloading && root.link-text != "";
-                            mouse-cursor: self.enabled ? MouseCursor.pointer : MouseCursor.default;
-                            clicked => { root.download-link(root.link-text); }
-                        }
-                    }
-                }
 
                 // Only worth a row when a multiple selection exists — one
                 // selected card is deleted from the card itself.

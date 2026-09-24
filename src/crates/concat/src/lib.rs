@@ -586,8 +586,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
             );
         });
     });
-    editor.on_download_link(on_window!(|state, url: slint::SharedString| {
-        state.download_video(url.as_str(), false);
+    editor.on_open_downloader(on_window!(|state| {
+        state.open_downloader();
     }));
     editor.on_media_activate(on_window!(|state, id: i32| {
         state.place_at_playhead(&format!("media:{id}"));
@@ -1305,6 +1305,27 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
     app.on_captions_cancel(on_window!(|state| {
         state.handle(Msg::Captions(CaptionsMsg::Cancel));
+    }));
+    app.on_downloader_closed(on_window!(|state| {
+        state.close_downloader();
+    }));
+    app.on_downloader_url_edited(on_window!(|state, text: SharedString| {
+        state.downloader_url(text.as_str());
+    }));
+    app.on_downloader_quality_changed(on_window!(|state, index: i32| {
+        state.downloader_set("quality", index);
+    }));
+    app.on_downloader_fps_changed(on_window!(|state, index: i32| {
+        state.downloader_set("fps", index);
+    }));
+    app.on_downloader_wanted_changed(on_window!(|state, index: i32| {
+        state.downloader_set("wanted", index);
+    }));
+    app.on_downloader_begin(on_window!(|state| {
+        state.downloader_begin();
+    }));
+    app.on_downloader_cancel(on_window!(|state| {
+        state.downloader_cancel();
     }));
     app.on_speech_closed(on_window!(|state| {
         state.handle(Msg::Speech(SpeechMsg::Close));

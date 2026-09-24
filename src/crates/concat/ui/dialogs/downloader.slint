@@ -1,0 +1,174 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 TikTok Imperija
+import { I18n } from "../i18n.slint";
+import { Theme } from "../theme/theme.slint";
+import { Glyph } from "../icons.slint";
+import { Button, DialogRow, DialogSection, Field, Modal, Progress } from "../primitives/modal.slint";
+import { SegmentedControl } from "../primitives/segmented-control.slint";
+import { Select } from "../primitives/select.slint";
+
+// Video Downloader: what the Library's Downloader tab opens.
+//
+// A link, and what to make of it. The options are here and not behind a
+// preference because they are the question every time: a podcast to cut
+// wants 1080p at 30, a clip to react to wants whatever is smallest, and
+// sometimes only the sound is wanted at all. A field with no choices
+// answers all three the same way and is wrong twice.
+//
+// Every limit is a ceiling rather than a demand - see `format_for` in the
+// host - so asking for 1080p from a video that only exists in 4K brings
+// the 4K down instead of failing. That is the behaviour a person expects
+// from a menu called "at most".
+export struct DownloaderSheetData {
+    open: bool,
+    /// The address, as Rust last set it.
+    url: string,
+    /// 0 best, 1 2160, 2 1080, 3 720, 4 480
+    quality: int,
+    /// 0 any, 1 30, 2 60
+    fps: int,
+    /// 0 video with sound, 1 sound as served, 2 sound as MP3
+    wanted: int,
+    /// ffmpeg is on the machine, so MP3 can be offered.
+    can-convert: bool,
+    running: bool,
+    /// The tool itself is still coming down, not the video.
+    fetching-tool: bool,
+    /// 0..1
+    progress: float,
+    /// What went wrong last time, when something did.
+    message: string,
+}
+
+export component DownloaderDialog inherits Modal {
+    in property <DownloaderSheetData> data;
+
+    callback url-changed(text: string);
+    callback quality-changed(index: int);
+    callback fps-changed(index: int);
+    callback wanted-changed(index: int);
+    callback begin();
+    callback cancel();
+
+    /// Sound alone: the picture's two menus have nothing to say about it.
+    property <bool> sound-only: root.data.wanted != 0;
+
+    open: root.data.open;
+    title: I18n.t("Video Downloader");
+    glyph: Glyph.import;
+    surface-width: 460px;
+    dismissable: !root.data.running;
+    note: I18n.t("Paste a link from TikTok, YouTube, Instagram or elsewhere");
+
+    VerticalLayout {
+        DialogSection {
+            first: true;
+            title: I18n.t("Link");
+
+            Field {
+                value: root.data.url;
+                technical: true;
+                placeholder: "https://…";
+                edited(text) => { root.url-changed(text); }
+            }
+
+            // One control, three answers, and the two picture menus below
+            // grey out when it is not the picture being taken.
+            SegmentedControl {
+                options: root.data.can-convert
+                    ? [I18n.t("Video"), I18n.t("Sound"), I18n.t("MP3")]
+                    : [I18n.t("Video"), I18n.t("Sound")];
+                current: root.data.wanted;
+                changed(index) => { root.wanted-changed(index); }
+            }
+
+            if !root.data.can-convert: Text {
+                text: I18n.t("MP3 needs ffmpeg on this machine; sound comes down as the site serves it.");
+                color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+        }
+
+        if !root.sound-only: DialogSection {
+            title: I18n.t("Picture");
+
+            DialogRow {
+                label: I18n.t("At most");
+                Select {
+                    options: [I18n.t("Best there is"), "4K (2160p)", "1080p", "720p", "480p"];
+                    current: root.data.quality;
+                    changed(index) => { root.quality-changed(index); }
+                }
+            }
+
+            DialogRow {
+                label: I18n.t("Frames a second");
+                Select {
+                    options: [I18n.t("Any"), "30", "60"];
+                    current: root.data.fps;
+                    changed(index) => { root.fps-changed(index); }
+                }
+            }
+
+            Text {
+                text: I18n.t("A ceiling, not a demand: a video that has nothing that small comes down at what it has.");
+                color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+        }
+
+        DialogSection {
+            if root.data.message != "": Text {
+                text: root.data.message;
+                color: Theme.danger;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+
+            // The tool coming down and the video coming down are two
+            // different waits, and saying which one it is stops the bar
+            // looking stuck at the handover.
+            if root.data.running: HorizontalLayout {
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.data.fetching-tool
+                        ? I18n.t("Fetching the downloader, once only")
+                        : I18n.t("Downloading");
+                    color: Theme.fg;
+                    font-size: Theme.fs;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "\{Math.round(root.data.progress * 100)}%";
+                    color: Theme.fg-muted;
+                    font-family: Theme.font-technical;
+                    font-size: Theme.fs;
+                    vertical-alignment: center;
+                }
+            }
+            if root.data.running: Progress { value: root.data.progress; }
+
+            if root.data.running: HorizontalLayout {
+                alignment: start;
+                Button {
+                    label: I18n.t("Cancel");
+                    glyph: Glyph.close;
+                    ghost: true;
+                    clicked => { root.cancel(); }
+                }
+            }
+
+            if !root.data.running: Button {
+                block: true;
+                primary: true;
+                large: true;
+                glyph: Glyph.import;
+                label: I18n.t("Fetch");
+                enabled: root.data.url != "";
+                clicked => { root.begin(); }
+            }
+        }
+    }
+}
