@@ -25,8 +25,8 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::jobs::SingleFlight;
 
@@ -351,6 +351,11 @@ impl Downloads {
             // downloads and then says where the file went, which beats
             // guessing the name back out of the template.
             .arg("--no-simulate")
+            // `--print` makes the tool quiet, progress included - it is
+            // meant for "tell me this one field and nothing else". Without
+            // this the download runs fine and reports nothing, which is a
+            // bar sitting at nought for as long as it takes.
+            .arg("--no-quiet")
             .args(["--print", "after_move:filepath"])
             .arg(&request.url)
             .stdout(Stdio::piped())
@@ -358,6 +363,10 @@ impl Downloads {
             .spawn()
             .map_err(|error| format!("could not run the downloader: {error}"))?;
 
+        // Cancelling cannot wait for the next line: the tool can be silent
+        // for a minute while it reads the page, and the loop below is
+        // blocked on a line that is not coming. A watcher ends the process
+        // itself, so Cancel answers at once whatever the tool is doing.
         // Read on a thread of its own, never after the wait. A pipe holds
         // about sixty kilobytes; once it is full the tool blocks writing
         // its next warning, and a caller that reads only after the process
@@ -373,11 +382,29 @@ impl Downloads {
         });
 
         let stdout = child.stdout.take().ok_or("the downloader said nothing")?;
+        let child = Arc::new(Mutex::new(child));
+        let finished = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let child = Arc::clone(&child);
+            let finished = Arc::clone(&finished);
+            let cancel = Arc::clone(&cancel);
+            std::thread::spawn(move || {
+                while !finished.load(Ordering::Relaxed) {
+                    if cancel.load(Ordering::Relaxed) {
+                        if let Ok(mut child) = child.lock() {
+                            let _ = child.kill();
+                        }
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                }
+            })
+        };
+
         let mut landed: Option<PathBuf> = None;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             if cancel.load(Ordering::Relaxed) {
-                let _ = child.kill();
-                return Err("download cancelled".to_owned());
+                break;
             }
             if let Some(percent) = percent_of(&line) {
                 progress(Progress::Downloading(percent));
@@ -391,8 +418,15 @@ impl Downloads {
             }
         }
         let status = child
+            .lock()
+            .map_err(|_| "downloader state poisoned")?
             .wait()
             .map_err(|error| format!("the downloader did not finish: {error}"))?;
+        finished.store(true, Ordering::Relaxed);
+        let _ = watcher.join();
+        if cancel.load(Ordering::Relaxed) {
+            return Err("download cancelled".to_owned());
+        }
         let said = complaints.join().unwrap_or_default();
         for line in &said {
             log::warn!("download: {line}");

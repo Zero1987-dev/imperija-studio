@@ -97,6 +97,20 @@ export component DownloaderDialog inherits Modal {
                 changed(index) => { root.wanted-changed(index); }
             }
 
+            // What the three choices actually differ by. "Sound" and
+            // "MP3" both bring the sound alone, and nothing on the button
+            // says that one of them re-encodes it.
+            Text {
+                text: root.data.wanted == 0
+                    ? I18n.t("Picture and sound together.")
+                    : root.data.wanted == 1
+                        ? I18n.t("Sound alone, exactly as the site serves it. Nothing is re-encoded, so nothing is lost and it is immediate.")
+                        : I18n.t("Sound alone, turned into an MP3. Opens anywhere, but it is encoded a second time and takes longer.");
+                color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+
             if !root.data.can-convert: Text {
                 text: I18n.t("MP3 needs ffmpeg on this machine; sound comes down as the site serves it.");
                 color: Theme.fg-muted;
