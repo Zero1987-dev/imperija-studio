@@ -37,9 +37,10 @@ jobs:
         id: version
         shell: bash
         run: |
-          set -euo pipefail
-          v=$(grep -m1 '^version = ' src/crates/concat/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-          echo "version=$v" >> "$GITHUB_OUTPUT"
+          # The crate takes the workspace's version, so it is read from the
+          # workspace manifest - the same line the full workflow uses.
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' src/Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: System libraries
         run: |
