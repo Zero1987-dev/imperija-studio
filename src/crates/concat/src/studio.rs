@@ -4917,6 +4917,29 @@ impl Studio {
         self.downloader.url = url.to_owned();
     }
 
+    /// The destination switch was moved.
+    pub fn downloader_to_folder(&mut self, on: bool) {
+        self.downloader.to_folder = on;
+        self.downloader.message.clear();
+    }
+
+    /// The folder was typed into.
+    pub fn downloader_folder(&mut self, folder: &str) {
+        self.downloader.folder = folder.to_owned();
+    }
+
+    /// Asks the system for a folder and takes the answer.
+    pub fn downloader_browse(&mut self) {
+        // Empty start: the picker then opens wherever the system last left
+        // it, which is what relink does and what people expect.
+        let start = self.downloader.folder.clone();
+        if let Some(folder) = crate::platform::pick_folder(&t("Choose a folder"), &start) {
+            self.downloader.folder = folder.to_string_lossy().into_owned();
+            self.downloader.to_folder = true;
+            self.downloader.message.clear();
+        }
+    }
+
     /// Asks the running fetch to stop.
     pub fn downloader_cancel(&mut self) {
         self.host.downloads.cancel();
@@ -4937,14 +4960,23 @@ impl Studio {
             self.downloader.message = t("A download is already running; one at a time");
             return;
         }
-        let Some(session) = self.session.as_ref() else {
-            self.downloader.message =
-                t("Save the project first, so the video has somewhere to live");
-            return;
+        let into = if self.downloader.to_folder {
+            if self.downloader.folder.trim().is_empty() {
+                self.downloader.message = t("Choose a folder first");
+                return;
+            }
+            std::path::PathBuf::from(self.downloader.folder.trim())
+        } else {
+            let Some(session) = self.session.as_ref() else {
+                self.downloader.message =
+                    t("Save the project first, so the video has somewhere to live");
+                return;
+            };
+            std::path::PathBuf::from(session.path()).join("media")
         };
         let request = concat_host::FetchRequest {
             url,
-            into: std::path::PathBuf::from(session.path()).join("media"),
+            into,
             clean: true,
             wanted: self.downloader.wanted(),
             max_height: self.downloader.height(),
@@ -7502,6 +7534,8 @@ impl Studio {
             fetching_tool: self.downloader.fetching_tool,
             progress: self.downloader.progress,
             message: self.downloader.message.as_str().into(),
+            to_folder: self.downloader.to_folder,
+            folder: self.downloader.folder.as_str().into(),
         });
         let voices = installed(&self.settings.voices);
         sync(
@@ -8333,6 +8367,12 @@ pub struct DownloaderSheet {
     /// Why the last attempt failed. Kept in the sheet rather than shown as
     /// a toast that is gone before it has been read.
     pub message: String,
+    /// The file goes to a folder of the person's own rather than into the
+    /// project. Off by default: a project that carries its own media is
+    /// one thing to move.
+    pub to_folder: bool,
+    /// That folder, when one has been chosen.
+    pub folder: String,
 }
 
 impl DownloaderSheet {

@@ -80,8 +80,14 @@ export component Modal inherits Rectangle {
                     padding-right: 12px;
                     spacing: 8px;
 
+                    // Held to the left third and elided past it. The title
+                    // below is centred over the whole strip, so a note long
+                    // enough to reach the middle would be drawn straight
+                    // through it - which is what a long one did.
                     if root.note != "": Text {
                         text: root.note;
+                        max-width: root.surface-width / 3;
+                        overflow: elide;
                         color: Theme.fg-dim;
                         font-family: Theme.font-technical;
                         font-size: Theme.fs-sm;

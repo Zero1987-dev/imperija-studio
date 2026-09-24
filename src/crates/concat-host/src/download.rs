@@ -314,6 +314,17 @@ impl Downloads {
 
         let mut child = Command::new(&tool)
             .arg("--no-playlist")
+            // YouTube hands out addresses that go stale, and a long file can
+            // outlive the one it started on: the download then stops with
+            // "403 Forbidden" partway through. These make the tool ask again
+            // instead of giving up, and fetch the address afresh when the
+            // old one is refused.
+            .args(["--retries", "20"])
+            .args(["--fragment-retries", "20"])
+            .args(["--extractor-retries", "5"])
+            // Take up where a stopped attempt left off rather than starting
+            // the hour again.
+            .arg("--continue")
             // Named rather than left to the default, which is deno alone.
             .args(match js_runtime() {
                 Some(runtime) => vec!["--js-runtime".to_owned(), runtime.to_owned()],

@@ -6,6 +6,7 @@ import { Glyph } from "../icons.slint";
 import { Button, DialogRow, DialogSection, Field, Modal, Progress } from "../primitives/modal.slint";
 import { SegmentedControl } from "../primitives/segmented-control.slint";
 import { Select } from "../primitives/select.slint";
+import { Switch } from "../inspector/controls.slint";
 
 // Video Downloader: what the Library's Downloader tab opens.
 //
@@ -31,6 +32,10 @@ export struct DownloaderSheetData {
     wanted: int,
     /// ffmpeg is on the machine, so MP3 can be offered.
     can-convert: bool,
+    /// The file goes to a folder the person chose, not into the project.
+    to-folder: bool,
+    /// That folder, when they have chosen one.
+    folder: string,
     running: bool,
     /// The tool itself is still coming down, not the video.
     fetching-tool: bool,
@@ -47,6 +52,10 @@ export component DownloaderDialog inherits Modal {
     callback quality-changed(index: int);
     callback fps-changed(index: int);
     callback wanted-changed(index: int);
+    callback to-folder-changed(on: bool);
+    callback folder-changed(text: string);
+    /// Opens the system's folder picker.
+    callback browse();
     callback begin();
     callback cancel();
 
@@ -58,7 +67,6 @@ export component DownloaderDialog inherits Modal {
     glyph: Glyph.import;
     surface-width: 460px;
     dismissable: !root.data.running;
-    note: I18n.t("Paste a link from TikTok, YouTube, Instagram or elsewhere");
 
     VerticalLayout {
         DialogSection {
@@ -70,6 +78,13 @@ export component DownloaderDialog inherits Modal {
                 technical: true;
                 placeholder: "https://…";
                 edited(text) => { root.url-changed(text); }
+            }
+
+            Text {
+                text: I18n.t("From TikTok, YouTube, Instagram or elsewhere");
+                color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
             }
 
             // One control, three answers, and the two picture menus below
@@ -113,6 +128,46 @@ export component DownloaderDialog inherits Modal {
 
             Text {
                 text: I18n.t("A ceiling, not a demand: a video that has nothing that small comes down at what it has.");
+                color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+        }
+
+        // Where it lands. Into the project by default, because a project
+        // that carries its own media is one thing to move, back up or hand
+        // to someone else. A folder of their own for when the file is
+        // wanted outside the editor as well.
+        DialogSection {
+            title: I18n.t("Where it lands");
+
+            DialogRow {
+                label: I18n.t("Into a folder of my own");
+                Switch {
+                    checked: root.data.to-folder;
+                    toggled(on) => { root.to-folder-changed(on); }
+                }
+            }
+
+            if root.data.to-folder: HorizontalLayout {
+                spacing: 6px;
+                Field {
+                    value: root.data.folder;
+                    technical: true;
+                    placeholder: I18n.t("Choose a folder");
+                    edited(text) => { root.folder-changed(text); }
+                }
+                Button {
+                    label: I18n.t("Browse");
+                    ghost: true;
+                    clicked => { root.browse(); }
+                }
+            }
+
+            Text {
+                text: root.data.to-folder
+                    ? I18n.t("It still appears in the bin, ready to edit.")
+                    : I18n.t("Into the project's own folder, so it travels with it.");
                 color: Theme.fg-muted;
                 font-size: Theme.fs-sm;
                 wrap: word-wrap;

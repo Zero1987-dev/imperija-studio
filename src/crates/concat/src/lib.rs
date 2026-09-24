@@ -1327,6 +1327,15 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_downloader_cancel(on_window!(|state| {
         state.downloader_cancel();
     }));
+    app.on_downloader_to_folder_changed(on_window!(|state, on: bool| {
+        state.downloader_to_folder(on);
+    }));
+    app.on_downloader_folder_edited(on_window!(|state, text: SharedString| {
+        state.downloader_folder(text.as_str());
+    }));
+    app.on_downloader_browse(on_window!(|state| {
+        state.downloader_browse();
+    }));
     app.on_speech_closed(on_window!(|state| {
         state.handle(Msg::Speech(SpeechMsg::Close));
     }));

@@ -627,9 +627,13 @@ pub fn media_art(
             id,
             stream,
             thumbnail: None,
-            peaks: media::peaks(&path, stream, Some(&project))
-                .ok()
-                .map(|peaks| Arc::new(concat_media::Pyramid::of(peaks))),
+            peaks: match media::peaks(&path, stream, Some(&project)) {
+                Ok(peaks) => Some(Arc::new(concat_media::Pyramid::of(peaks))),
+                Err(error) => {
+                    log::warn!("peaks: {path} stream {stream:?}: {error}");
+                    None
+                }
+            },
             strip: None,
         };
     }
@@ -648,9 +652,16 @@ pub fn media_art(
     };
     let peaks = (kind == MediaKind::Audio || has_audio)
         .then(|| {
-            media::peaks(&path, None, Some(&project))
-                .ok()
-                .map(|peaks| Arc::new(concat_media::Pyramid::of(peaks)))
+            // Said out loud when it fails. Swallowed, a file simply draws
+            // as a blank block and there is nothing anywhere to say why -
+            // which is exactly how a missing waveform was reported.
+            match media::peaks(&path, None, Some(&project)) {
+                Ok(peaks) => Some(Arc::new(concat_media::Pyramid::of(peaks))),
+                Err(error) => {
+                    log::warn!("peaks: {path}: {error}");
+                    None
+                }
+            }
         })
         .flatten();
     // The filmstrip reads the proxy where the file has one: the tiles are

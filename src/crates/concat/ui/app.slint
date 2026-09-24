@@ -259,6 +259,9 @@ export component App inherits Window {
     callback downloader-wanted-changed(index: int);
     callback downloader-begin();
     callback downloader-cancel();
+    callback downloader-to-folder-changed(on: bool);
+    callback downloader-folder-edited(text: string);
+    callback downloader-browse();
 
     in property <SpeechSheetData> speech;
     in property <[string]> speech-models;
@@ -633,6 +636,9 @@ export component App inherits Window {
         wanted-changed(index) => { root.downloader-wanted-changed(index); }
         begin => { root.downloader-begin(); }
         cancel => { root.downloader-cancel(); }
+        to-folder-changed(on) => { root.downloader-to-folder-changed(on); }
+        folder-changed(text) => { root.downloader-folder-edited(text); }
+        browse => { root.downloader-browse(); }
     }
 
     SpeechDialog {
