@@ -75,7 +75,12 @@ export global Editor {
     in-out property <int> media-selected-count;
     in-out property <bool> importing;
 
+    /// A link is being fetched, and how far along it is.
+    in-out property <bool> downloading;
+    in-out property <float> download-progress;
     callback import-media();
+    /// A video fetched from a link and put in the bin.
+    callback download-link(url: string);
     callback media-filter-changed(filter: MediaFilter);
     callback media-sort-changed(index: int);
     callback media-select(id: int, additive: bool);

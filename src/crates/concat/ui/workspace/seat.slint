@@ -101,8 +101,11 @@ export component Seat inherits Rectangle {
             count-processed: Editor.media-count-processed;
             selected-count: Editor.media-selected-count;
             importing: Editor.importing;
+            downloading: Editor.downloading;
+            download-progress: Editor.download-progress;
 
             import-media => { Editor.import-media(); }
+            download-link(url) => { Editor.download-link(url); }
             filter-changed(filter) => { Editor.media-filter-changed(filter); }
             sort-changed(index) => { Editor.media-sort-changed(index); }
             floor-pressed => { Editor.blur(); }

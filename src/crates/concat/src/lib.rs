@@ -586,6 +586,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
             );
         });
     });
+    editor.on_download_link(on_window!(|state, url: slint::SharedString| {
+        state.download_video(url.as_str(), false);
+    }));
     editor.on_media_activate(on_window!(|state, id: i32| {
         state.place_at_playhead(&format!("media:{id}"));
     }));

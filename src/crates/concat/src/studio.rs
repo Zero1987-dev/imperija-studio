@@ -775,6 +775,9 @@ pub struct Studio {
     /// Reframes under way, by clip: whether a model is still coming
     /// down, and how far along it is.
     reframe_jobs: HashMap<String, (bool, f32)>,
+    /// A link being fetched: whether the tool is still coming down,
+    /// and how far along it is. None when nothing is.
+    download_job: Option<(bool, f32)>,
     /// The smart stroke being read, by the same name, while one is.
     region_job: Option<String>,
     /// The last smart stroke as the stage drew it, kept on screen from the
@@ -1471,6 +1474,7 @@ impl Studio {
             cutout_jobs: HashMap::new(),
             enhance_jobs: HashMap::new(),
             reframe_jobs: HashMap::new(),
+            download_job: None,
             region_job: None,
             pending_stroke: None,
             host,
@@ -4885,6 +4889,78 @@ impl Studio {
         );
     }
 
+    /// Fetches the video at `url` into the project and puts it in the bin.
+    ///
+    /// The file lands in the project's own `media` folder rather than a
+    /// downloads folder, so a project stays one thing to move or back up,
+    /// and the clip's path does not point outside it.
+    pub fn download_video(&mut self, url: &str, audio_only: bool) {
+        let url = url.trim().to_owned();
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            self.notify(&t("That does not look like a link"), true);
+            return;
+        }
+        if self.download_job.is_some() || self.host.downloads.is_busy() {
+            self.notify(&t("A download is already running; one at a time"), true);
+            return;
+        }
+        let Some(session) = self.session.as_ref() else {
+            self.notify(
+                &t("Save the project first, so the video has somewhere to live"),
+                true,
+            );
+            return;
+        };
+        let request = concat_host::FetchRequest {
+            url,
+            into: std::path::PathBuf::from(session.path()).join("media"),
+            clean: true,
+            audio_only,
+        };
+        self.download_job = Some((false, 0.0));
+        self.notify(&t("Fetching the video…"), false);
+
+        let downloads = Arc::clone(&self.host.downloads);
+        let epoch = crate::host::project_epoch();
+        spawn_in_project(
+            move || -> Result<concat_host::media::MediaSummary, String> {
+                let mut last = (false, -1.0f32);
+                let file = downloads.fetch(&request, &mut |progress| {
+                    let now = match progress {
+                        concat_host::download::Progress::Fetching { received, total } => {
+                            (true, received as f32 / total.max(1) as f32)
+                        }
+                        concat_host::download::Progress::Downloading(fraction) => (false, fraction),
+                        concat_host::download::Progress::Merging => (false, 1.0),
+                    };
+                    if now.0 != last.0 || now.1 - last.1 >= 0.01 {
+                        last = now;
+                        on_ui_in_project(epoch, move |studio, _, _| {
+                            if studio.download_job.is_some() {
+                                studio.download_job = Some(now);
+                            }
+                        });
+                    }
+                })?;
+                concat_host::media::probe(&file.to_string_lossy())
+            },
+            |studio, _, _, result| {
+                studio.download_job = None;
+                match result {
+                    Ok(summary) => {
+                        let name = summary.to_new_media().name.clone();
+                        studio.apply(Command::AddMedia {
+                            item: summary.to_new_media(),
+                        });
+                        studio.notify(&tf("{0} is in the bin", &[&name]), false);
+                    }
+                    Err(error) if error.contains("cancelled") => {}
+                    Err(error) => studio.notify(&tf("Download: {0}", &[&error]), true),
+                }
+            },
+        );
+    }
+
     /// Puts a reframe's keys on clip `id` as one undo step: the three
     /// properties it drives are cleared first, so a second reframe replaces
     /// the first rather than fighting it.
@@ -7319,6 +7395,11 @@ impl Studio {
         );
         editor.set_media_selected_count(self.media.selected.len() as i32);
         editor.set_importing(false);
+        // The tool coming down and the video coming down are one bar to the
+        // person watching it; which of the two it is shows in the toast.
+        let (fetching, done) = self.download_job.unwrap_or((false, 0.0));
+        editor.set_downloading(self.download_job.is_some());
+        editor.set_download_progress(if fetching { done * 0.1 } else { done });
 
         let (width, height) = self.output_size();
         editor.set_output_width(width as i32);
