@@ -143,18 +143,38 @@ impl Default for FetchRequest {
     }
 }
 
+/// What a picture has to be encoded in to be worth editing.
+///
+/// H.264. Not because it is the best - AV1 is half the size for the same
+/// picture, which is why YouTube serves it first - but because every
+/// graphics chip made in the last fifteen years decodes it in hardware,
+/// and almost none of them decode AV1 at all. An AV1 file plays back on
+/// the processor alone: it downloads quickly, looks fine in a player that
+/// buffers, and drags an editor's timeline to a crawl the moment anything
+/// asks it to seek.
+pub const EDITABLE: &str = "[vcodec^=avc1]";
+
+/// And the sound: AAC in an MP4, the pair H.264 is normally carried with.
+/// Opus and Vorbis are fine to play, but muxing them beside H.264 leaves
+/// a file some tools will not open.
+pub const EDITABLE_SOUND: &str = "[acodec^=mp4a]";
+
 /// The format rule for a request, in yt-dlp's own language.
 ///
-/// Read left to right, `/` meaning "or else". The first choice is the best
-/// picture within the limits joined to the best sound; the second is a
-/// single file within the limits, which is what the sites that serve one
-/// file offer; the last is the best of anything, so a video that has no
-/// 1080p copy comes down at whatever it does have rather than failing. A
+/// Read left to right, `/` meaning "or else". Four choices for a picture:
+/// H.264 within the limits, anything within the limits, H.264 at any size,
+/// and finally any single file. So the usual answer is an editable file at
+/// the asked-for size, a video that exists only in AV1 still comes down,
+/// and a video that has no copy that small comes down at what it has. A
 /// limit is a ceiling, never a demand.
+///
+/// Every choice carries the watermark rule, the last one included: a
+/// silently watermarked video is worse than a download that says it found
+/// nothing clean.
 pub fn format_for(request: &FetchRequest) -> String {
     let clean = if request.clean { CLEAN_TIKTOK } else { "" };
     if request.wanted != Wanted::Video {
-        return format!("ba{clean}/b{clean}/ba/b");
+        return format!("ba{EDITABLE_SOUND}{clean}/ba{clean}/b{clean}");
     }
     let mut limits = String::new();
     if request.max_height > 0 {
@@ -163,10 +183,9 @@ pub fn format_for(request: &FetchRequest) -> String {
     if request.max_fps > 0 {
         limits.push_str(&format!("[fps<={}]", request.max_fps));
     }
-    // Every choice carries the watermark rule, the last one included: a
-    // silently watermarked video is worse than a download that says it
-    // found nothing clean.
-    format!("bv*{limits}{clean}+ba/b{limits}{clean}/bv*{clean}+ba/b{clean}")
+    format!(
+        "bv*{limits}{EDITABLE}{clean}+ba{EDITABLE_SOUND}{clean}         /bv*{limits}{EDITABLE}{clean}+ba{clean}         /bv*{limits}{clean}+ba{clean}         /bv*{EDITABLE}{clean}+ba{clean}         /b{clean}"
+    )
 }
 
 /// The fetching service: where the tool lives, and the one-job slot.
@@ -454,6 +473,37 @@ mod tests {
             max_fps: fps,
             ..FetchRequest::default()
         })
+    }
+
+    #[test]
+    fn the_first_choice_is_one_the_graphics_chip_can_decode() {
+        // AV1 is what YouTube offers first and what the timeline cannot
+        // play; asking for H.264 ahead of it is the whole of this fix.
+        let f = asking(Wanted::Video, 1080, 30);
+        let first = f.split('/').next().expect("a first choice");
+        assert!(first.contains("vcodec^=avc1"), "{first}");
+        assert!(first.contains("acodec^=mp4a"), "{first}");
+    }
+
+    #[test]
+    fn a_video_that_exists_only_in_av1_still_comes_down() {
+        // Some choice has to be willing to take whatever there is, or a
+        // video with no H.264 copy fails instead of arriving.
+        let f = asking(Wanted::Video, 1080, 30);
+        assert!(
+            f.split('/').any(|choice| !choice.contains("avc1")),
+            "every choice demands H.264: {f}"
+        );
+    }
+
+    #[test]
+    fn sound_alone_prefers_the_one_that_muxes_with_h264() {
+        let f = asking(Wanted::Audio, 0, 0);
+        assert!(f.starts_with("ba[acodec^=mp4a]"), "{f}");
+        assert!(
+            f.split('/').any(|c| !c.contains("mp4a")),
+            "no fallback: {f}"
+        );
     }
 
     #[test]
