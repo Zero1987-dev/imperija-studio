@@ -43,6 +43,7 @@ pub mod apply;
 #[cfg(feature = "infer")]
 pub mod brush;
 pub mod enhance;
+pub mod face;
 pub mod mask;
 pub mod models;
 pub mod reframe;
