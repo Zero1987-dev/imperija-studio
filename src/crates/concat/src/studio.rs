@@ -42,7 +42,7 @@ use concat_project::model::{
     self, AppliedFilter, Clip, Project, TextAlign, TextStyle, Timeline, Track, Transition,
 };
 use concat_project::{Command, why_not_merge};
-use slint::{Model, SharedString, VecModel};
+use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::dock::{
     Dock, DockLayout, SEAT_GAP, default_dock, lay_out, nearest_row, row_at, row_top,
@@ -53,8 +53,8 @@ use crate::format::{
 };
 use crate::host::{
     CachedStrip, Host, MediaArt, WindowArt, cached_media_art, cached_window_art, image_at,
-    image_of, media_art, on_ui, spawn, spawn_art, spawn_strip, strip_window, window_art,
-    window_span, window_start,
+    image_of, media_art, on_ui_in_project, spawn, spawn_art, spawn_in_project, spawn_strip,
+    strip_window, window_art, window_span, window_start,
 };
 use crate::i18n::{self, t, tf};
 use crate::panes::settings::installed;
@@ -489,14 +489,22 @@ pub struct Models {
     /// the rest, since a model handed over fresh is unequal to the last by
     /// identity and re-evaluates every binding on it.
     pub key_rows: Rc<VecModel<ClipKeyData>>,
+    /// The Keyframes panel's rows; see `Studio::key_editor_rows`.
+    pub key_editor_rows: Rc<VecModel<KeyRowData>>,
+    /// The ruler's diamonds; see `Studio::key_marks`.
+    pub key_marks: Rc<VecModel<f32>>,
     pub library_views: Rc<VecModel<LibraryViewData>>,
     pub menu: Rc<VecModel<MenuItemData>>,
     pub bar: Rc<VecModel<MenuItemData>>,
     /// The sheets' option lists: what is installed, and who can speak.
     pub caption_models: Rc<VecModel<SharedString>>,
     pub speech_models: Rc<VecModel<SharedString>>,
+    pub speech_model_details: Rc<VecModel<SharedString>>,
     pub speakers: Rc<VecModel<SharedString>>,
     pub speaker_details: Rc<VecModel<SharedString>>,
+    pub speech_samples: Rc<VecModel<SharedString>>,
+    pub speech_sample_waves: Rc<VecModel<SharedString>>,
+    pub speech_sample_details: Rc<VecModel<SharedString>>,
     pub transcribers: Rc<VecModel<ModelData>>,
     pub voices: Rc<VecModel<ModelData>>,
     pub seats: Rc<VecModel<SeatBox>>,
@@ -531,13 +539,19 @@ impl Models {
             audio_params: Rc::new(VecModel::default()),
             adjust_params: Rc::new(VecModel::default()),
             key_rows: Rc::new(VecModel::default()),
+            key_editor_rows: Rc::new(VecModel::default()),
+            key_marks: Rc::new(VecModel::default()),
             library_views: Rc::new(VecModel::default()),
             menu: Rc::new(VecModel::default()),
             bar: Rc::new(VecModel::default()),
             caption_models: Rc::new(VecModel::default()),
             speech_models: Rc::new(VecModel::default()),
+            speech_model_details: Rc::new(VecModel::default()),
             speakers: Rc::new(VecModel::default()),
             speaker_details: Rc::new(VecModel::default()),
+            speech_samples: Rc::new(VecModel::default()),
+            speech_sample_waves: Rc::new(VecModel::default()),
+            speech_sample_details: Rc::new(VecModel::default()),
             transcribers: Rc::new(VecModel::default()),
             voices: Rc::new(VecModel::default()),
             seats: Rc::new(VecModel::default()),
@@ -599,6 +613,17 @@ pub struct Studio {
     /// more than one frame repeated. See `host::strip_window`.
     pub windows: HashMap<String, Strip>,
     art_pending: HashSet<String>,
+    /// Art keys a decode came back empty for: not asked again this
+    /// project, or a file that cannot be read would be decoded on every
+    /// event.
+    art_failed: HashSet<String>,
+    /// What the last art scan was for: the document's revision, the
+    /// screen, and how much was pending. The scan runs when one of them
+    /// changes and is a comparison on the pointer stream between.
+    art_stamp: Option<(u64, bool, usize)>,
+    /// Media whose proxy has been seen to, this project: `proxy::ensure`
+    /// costs two stats of the file, and once is enough.
+    proxied: HashSet<String>,
     window_pending: HashSet<String>,
     /// Envelopes, keyed by the things they are computed from. A move
     /// changes none of them, and a publish happens on every frame of one.
@@ -630,6 +655,9 @@ pub struct Studio {
     pub open_menu: i32,
     pub menu_bar_token: i32,
     pub menu_target: Option<String>,
+    /// The media the bin's menu was opened on, when it was the bin's menu
+    /// and not a clip's: the two share one set of rows and one token.
+    pub menu_media: Option<String>,
     pub menu_token: i32,
     pub toast: ToastState,
 
@@ -681,6 +709,14 @@ pub struct Studio {
     /// a rebuild of the mix and a full publish. The commit is held until
     /// the moves pause; the echo shows the value meanwhile.
     commit_pending: bool,
+    /// The clip the held commit is for: the one that was selected when the
+    /// inspector wrote to the echo. Kept apart from the selection because
+    /// the two can come apart before the commit lands - a press on the
+    /// lanes' floor blurs a title's text box, which holds the commit, and
+    /// then clears the selection on the release - and a commit that looked
+    /// the clip up in the selection at landing time found nothing and
+    /// dropped the words with the echo.
+    commit_target: Option<String>,
     commit_timer: slint::Timer,
     /// What the catalogue shelves were last built from; while nothing in
     /// it changes the shelves are not rebuilt.
@@ -918,7 +954,6 @@ fn commit_key(commands: &[Command]) -> String {
             Command::SetClipCutout { .. } => "cutout".to_owned(),
             Command::SetClipSpeed { .. } => "speed".to_owned(),
             Command::SetClipSpeedCurve { .. } => "curve".to_owned(),
-            Command::SetClipAnimation { slot, .. } => format!("animation:{slot:?}"),
             Command::UpdateClip { patch, .. } => {
                 let mut fields = Vec::new();
                 if patch.name.is_some() {
@@ -967,40 +1002,6 @@ fn key_field_of(property: model::KeyProperty) -> ClipField {
         model::KeyProperty::Opacity => ClipField::Opacity,
         model::KeyProperty::Volume => ClipField::Volume,
     }
-}
-
-/// The menu row of a slot's animation: -1 for none.
-fn slot_index(
-    slot: concat_project::model::AnimationSlot,
-    set: &Option<concat_project::model::ClipAnimation>,
-) -> i32 {
-    set.as_ref()
-        .and_then(|set| concat_project::animation::index_of(slot, &set.preset))
-        .map(|index| index as i32)
-        .unwrap_or(-1)
-}
-
-/// A slot set from its menu row: -1 takes it off, else the row's shape at
-/// the length already set or `seconds`.
-fn set_slot(
-    slot: concat_project::model::AnimationSlot,
-    field: &mut Option<concat_project::model::ClipAnimation>,
-    row: f64,
-    seconds: f64,
-) {
-    if row < 0.0 {
-        *field = None;
-        return;
-    }
-    let names = concat_project::animation::names(slot);
-    let Some(name) = names.get(row as usize) else {
-        return;
-    };
-    let duration = field.as_ref().map(|set| set.duration).unwrap_or(seconds);
-    *field = Some(concat_project::model::ClipAnimation {
-        preset: (*name).to_owned(),
-        duration,
-    });
 }
 
 /// What the catalogue shelves are a function of; see `Studio::shelf_stamp`.
@@ -1138,6 +1139,85 @@ fn ease_before(keys: &[model::ParamKey], at: f64) -> model::KeyEase {
         .rev()
         .find(|key| key.at < at)
         .map_or(model::KeyEase::LINEAR, |key| key.ease)
+}
+
+/// The playhead's place in `clip`, `0..=1`, held to its ends: where a keyed
+/// property is shown and written from. `Studio::key_point` is the same
+/// without the clamp, for the diamonds, which must not land a key on an end
+/// nobody aimed at.
+fn place_in(clip: &Clip, playhead: f32) -> f64 {
+    if clip.duration <= 0.0 {
+        return 0.0;
+    }
+    ((f64::from(playhead) - clip.start) / clip.duration).clamp(0.0, 1.0)
+}
+
+/// What a keyable property is worth on screen: its constant, or once it
+/// carries keys, its ride's value at `at`.
+fn shown(clip: &Clip, property: model::KeyProperty, at: f64) -> f64 {
+    if clip.is_keyed(property) {
+        clip.value_at(property, at)
+    } else {
+        clip.constant(property)
+    }
+}
+
+/// Writes a keyable property the way the person means it: the constant
+/// while the property has no keys, and once it rides, the key at `at` -
+/// put on if there was none, with the ease of the key behind it. The engine
+/// stops reading the constant the moment a property is keyed, so a knob or
+/// a stage drag that wrote it would change nothing on screen.
+fn write_keyable(clip: &mut Clip, property: model::KeyProperty, value: f64, at: f64) {
+    if clip.is_keyed(property) {
+        let ease = clip
+            .keys_on(property)
+            .rfind(|key| key.at < at)
+            .map_or(model::KeyEase::LINEAR, |key| key.ease);
+        clip.set_key(property, at, value, ease);
+        return;
+    }
+    match property {
+        model::KeyProperty::Scale => clip.scale = value,
+        model::KeyProperty::OffsetX => clip.offset_x = value,
+        model::KeyProperty::OffsetY => clip.offset_y = value,
+        model::KeyProperty::Rotation => clip.rotation = value,
+        model::KeyProperty::Opacity => clip.opacity = value,
+        model::KeyProperty::Volume => clip.volume = value,
+    }
+}
+
+/// The commands that turn `before`'s keys into `after`'s: a `SetClipKey`
+/// for every key added or changed, a `ClearClipKey` for every key gone.
+/// Two keys within a hair of each other are the same key.
+fn key_commands(clip_id: &str, before: &Clip, after: &Clip) -> Vec<Command> {
+    let near = |a: f64, b: f64| (a - b).abs() <= model::KEY_EPSILON;
+    let mut commands = Vec::new();
+    for property in model::KeyProperty::ALL {
+        for key in after.keys_on(property) {
+            let unchanged = before
+                .keys_on(property)
+                .any(|old| near(old.at, key.at) && old.value == key.value && old.ease == key.ease);
+            if !unchanged {
+                commands.push(Command::SetClipKey {
+                    clip_id: clip_id.to_owned(),
+                    property,
+                    at: key.at,
+                    value: key.value,
+                    ease: key.ease,
+                });
+            }
+        }
+        for old in before.keys_on(property) {
+            if !after.keys_on(property).any(|key| near(old.at, key.at)) {
+                commands.push(Command::ClearClipKey {
+                    clip_id: clip_id.to_owned(),
+                    property,
+                    at: old.at,
+                });
+            }
+        }
+    }
+    commands
 }
 
 /// The colour panel's rows: the adjust package's parameters, at the values
@@ -1325,6 +1405,9 @@ impl Studio {
             strips: HashMap::new(),
             windows: HashMap::new(),
             art_pending: HashSet::new(),
+            art_failed: HashSet::new(),
+            art_stamp: None,
+            proxied: HashSet::new(),
             window_pending: HashSet::new(),
             waves: RefCell::new(HashMap::new()),
             lanes: crate::panes::timeline::TimelinePane::default(),
@@ -1343,6 +1426,7 @@ impl Studio {
             open_menu: -1,
             menu_bar_token: 0,
             menu_target: None,
+            menu_media: None,
             menu_token: 0,
             toast: ToastState::default(),
             on_start: true,
@@ -1363,6 +1447,7 @@ impl Studio {
             revision: 0,
             flat: None,
             commit_pending: false,
+            commit_target: None,
             commit_timer: slint::Timer::default(),
             shelf_stamp: std::cell::RefCell::new(None),
             look_art: std::cell::RefCell::new(HashMap::new()),
@@ -1891,6 +1976,20 @@ impl Studio {
                         let end = studio.duration();
                         let position = studio.host.playback.position() as f32;
                         studio.playhead = position.min(end);
+                        // The view follows: a playhead that runs off the
+                        // right edge, or sits off the left, pages the lanes
+                        // to it, the way every editor keeps the cut in view.
+                        if let Some((low, high)) = studio.lanes.published_span() {
+                            let screen = (high - low) / 3.0;
+                            let left = studio.lanes.scroll_left;
+                            if screen > 0.0
+                                && (studio.playhead > left + screen * 0.95
+                                    || studio.playhead < left)
+                            {
+                                studio.lanes.scroll_left =
+                                    (studio.playhead - screen * 0.05).max(0.0);
+                            }
+                        }
                         if position >= end {
                             studio.pause();
                         } else {
@@ -1993,20 +2092,33 @@ impl Studio {
         let project_path = session.path().to_owned();
         // A file larger than HD gets a proxy for playback and the
         // filmstrips, written once on the scheduler's proxy lane; see
-        // concat_host::proxy.
-        for item in &self.project().media {
-            if item.kind == model::MediaKind::Video
-                && !item.placeholder
-                && let (Some(width), Some(height)) = (item.width, item.height)
-            {
-                concat_host::proxy::ensure(
-                    std::path::Path::new(&project_path),
-                    &item.path,
+        // concat_host::proxy. Asked once per file per project.
+        let unproxied: Vec<(String, String, u32, u32, Option<concat_media::ColorRange>)> = self
+            .project()
+            .media
+            .iter()
+            .filter(|item| item.kind == model::MediaKind::Video && !item.placeholder)
+            .filter(|item| !self.proxied.contains(&item.id))
+            .filter_map(|item| {
+                let (width, height) = (item.width?, item.height?);
+                Some((
+                    item.id.clone(),
+                    item.path.clone(),
                     width,
                     height,
                     item.color_range.map(concat_export::engine_range),
-                );
-            }
+                ))
+            })
+            .collect();
+        for (id, path, width, height, range) in unproxied {
+            concat_host::proxy::ensure(
+                std::path::Path::new(&project_path),
+                &path,
+                width,
+                height,
+                range,
+            );
+            self.proxied.insert(id);
         }
         /// One job: the art key it fills, and what to decode.
         struct Want {
@@ -2027,7 +2139,9 @@ impl Studio {
             .media
             .iter()
             .filter(|item| !item.placeholder && !item.path.is_empty())
-            .filter(|item| !self.art_pending.contains(&item.id))
+            .filter(|item| {
+                !self.art_pending.contains(&item.id) && !self.art_failed.contains(&item.id)
+            })
             .filter(|item| {
                 let needs_thumb = item.kind != model::MediaKind::Audio
                     && (!self.media.thumbs.contains_key(&item.id)
@@ -2070,6 +2184,7 @@ impl Studio {
             let key = art_key(&item.id, Some(stream));
             if self.peaks.contains_key(&key)
                 || self.art_pending.contains(&key)
+                || self.art_failed.contains(&key)
                 || !asked.insert(key.clone())
             {
                 continue;
@@ -2132,6 +2247,9 @@ impl Studio {
                 |studio, _, _, art: MediaArt| {
                     let key = art_key(&art.id, art.stream);
                     studio.art_pending.remove(&key);
+                    if art.thumbnail.is_none() && art.strip.is_none() && art.peaks.is_none() {
+                        studio.art_failed.insert(key.clone());
+                    }
                     if let Some(frame) = art.thumbnail {
                         studio.media.thumbs.insert(art.id.clone(), image_of(&frame));
                     }
@@ -3085,11 +3203,31 @@ impl Studio {
             };
             return;
         }
-        let moving = if self.selection.iter().any(|held| held == id) {
+        let mut moving = if self.selection.iter().any(|held| held == id) {
             self.selection.clone()
         } else {
             vec![id.to_owned()]
         };
+        // A detached sound travels with its picture and the picture with
+        // its sound: the pair stays in step unless one of them is moved
+        // on its own lane by a lock (#105).
+        let partners: Vec<String> = moving
+            .iter()
+            .filter_map(|clip_id| self.clip(clip_id))
+            .flat_map(|clip| {
+                let mut found: Vec<String> = clip.detached_from.iter().cloned().collect();
+                found.extend(
+                    self.timeline()
+                        .clips
+                        .iter()
+                        .filter(|other| other.detached_from.as_deref() == Some(clip.id.as_str()))
+                        .map(|other| other.id.clone()),
+                );
+                found
+            })
+            .filter(|partner| !moving.contains(partner))
+            .collect();
+        moving.extend(partners);
         let origins = moving
             .iter()
             .filter_map(|clip_id| {
@@ -3300,6 +3438,7 @@ impl Studio {
         let Some(id) = self.sole_selection() else {
             return;
         };
+        self.commit_target = Some(id.clone());
         // The media's tracks, read before the echo is borrowed: a row of
         // the Audio panel's list is a stream index of the file.
         let audio_tracks: Vec<u32> = if field == ClipField::AudioTrack {
@@ -3310,33 +3449,22 @@ impl Studio {
         } else {
             Vec::new()
         };
+        // Where the playhead sits in the clip: a keyed property is written
+        // there, as a key.
+        let at = self
+            .clip(&id)
+            .map(|clip| place_in(clip, self.playhead))
+            .unwrap_or(0.0);
         self.begin_echo();
         let value = f64::from(value);
-        // The one field that is the media's rather than the clip's: set on
-        // the echo's bin item, and committed as its own command below.
-        if field == ClipField::ColorRange {
-            let media_id = self.clip(&id).map(|clip| clip.media_id.clone());
-            if let Some(media_id) = media_id
-                && let Some(item) = self
-                    .echo
-                    .as_mut()
-                    .and_then(|echo| echo.media.iter_mut().find(|item| item.id == media_id))
-            {
-                item.color_range = match value as i32 {
-                    1 => Some(model::ColorRange::Limited),
-                    2 => Some(model::ColorRange::Full),
-                    _ => None,
-                };
-            }
-            return;
-        }
         let Some(clip) = self.echo_clip_mut(&id) else {
             return;
         };
         let text = clip.text.get_or_insert_with(TextStyle::default);
         match field {
-            ClipField::ColorRange => {}
-            ClipField::Scale => clip.scale = value.clamp(0.05, 8.0),
+            ClipField::Scale => {
+                write_keyable(clip, model::KeyProperty::Scale, value.clamp(0.05, 8.0), at)
+            }
             ClipField::AudioTrack => {
                 // The first row is the file's default and is stored as such,
                 // so a clip on the first track saves as every clip did before
@@ -3346,15 +3474,34 @@ impl Studio {
             }
             ClipField::StretchX => clip.stretch_x = value.clamp(0.1, 10.0),
             ClipField::StretchY => clip.stretch_y = value.clamp(0.1, 10.0),
-            ClipField::OffsetX => clip.offset_x = value.clamp(-1.0, 1.0),
-            ClipField::OffsetY => clip.offset_y = value.clamp(-1.0, 1.0),
-            ClipField::Rotation => clip.rotation = value.clamp(-180.0, 180.0),
-            ClipField::Opacity => clip.opacity = value.clamp(0.0, 1.0),
+            ClipField::OffsetX => write_keyable(
+                clip,
+                model::KeyProperty::OffsetX,
+                value.clamp(-1.0, 1.0),
+                at,
+            ),
+            ClipField::OffsetY => write_keyable(
+                clip,
+                model::KeyProperty::OffsetY,
+                value.clamp(-1.0, 1.0),
+                at,
+            ),
+            ClipField::Rotation => write_keyable(
+                clip,
+                model::KeyProperty::Rotation,
+                value.clamp(-180.0, 180.0),
+                at,
+            ),
+            ClipField::Opacity => {
+                write_keyable(clip, model::KeyProperty::Opacity, value.clamp(0.0, 1.0), at)
+            }
             ClipField::CutoutFeather => {
                 clip.cutout.get_or_insert_with(model::Cutout::auto).feather =
                     value.clamp(0.0, model::MAX_FEATHER);
             }
-            ClipField::Volume => clip.volume = value.max(0.0),
+            ClipField::Volume => {
+                write_keyable(clip, model::KeyProperty::Volume, value.max(0.0), at)
+            }
             ClipField::Speed => {
                 let speed = value.clamp(0.0625, 16.0);
                 clip.duration = (clip.duration * clip.speed / speed).max(f64::from(MIN_DURATION));
@@ -3389,45 +3536,6 @@ impl Studio {
                 *edge = value.clamp(0.0, 0.9);
                 let crop = crop.tidy();
                 clip.crop = (!crop.is_none()).then_some(crop);
-            }
-            ClipField::AnimIn => set_slot(
-                concat_project::model::AnimationSlot::In,
-                &mut clip.animation_in,
-                value,
-                0.5,
-            ),
-            ClipField::AnimOut => set_slot(
-                concat_project::model::AnimationSlot::Out,
-                &mut clip.animation_out,
-                value,
-                0.5,
-            ),
-            ClipField::AnimCombo => set_slot(
-                concat_project::model::AnimationSlot::Combo,
-                &mut clip.animation_combo,
-                value,
-                clip.duration,
-            ),
-            ClipField::AnimLoop => set_slot(
-                concat_project::model::AnimationSlot::Loop,
-                &mut clip.animation_loop,
-                value,
-                1.0,
-            ),
-            ClipField::AnimInDuration => {
-                if let Some(set) = clip.animation_in.as_mut() {
-                    set.duration = value.clamp(0.05, 60.0);
-                }
-            }
-            ClipField::AnimOutDuration => {
-                if let Some(set) = clip.animation_out.as_mut() {
-                    set.duration = value.clamp(0.05, 60.0);
-                }
-            }
-            ClipField::AnimLoopDuration => {
-                if let Some(set) = clip.animation_loop.as_mut() {
-                    set.duration = value.clamp(0.1, 60.0);
-                }
             }
             ClipField::SpeedCurve => {
                 // The same arithmetic as the command: the source covered is
@@ -3487,6 +3595,7 @@ impl Studio {
         let Some(id) = self.sole_selection() else {
             return;
         };
+        self.commit_target = Some(id.clone());
         self.begin_echo();
         let Some(clip) = self.echo_clip_mut(&id) else {
             return;
@@ -3527,6 +3636,7 @@ impl Studio {
         let Some(id) = self.sole_selection() else {
             return;
         };
+        self.commit_target = Some(id.clone());
         self.begin_echo();
         let Some(clip) = self.echo_clip_mut(&id) else {
             return;
@@ -3577,7 +3687,10 @@ impl Studio {
     }
 
     fn commit_now(&mut self) {
-        let Some(id) = self.sole_selection() else {
+        // The clip the echo was written for, whatever is selected now; see
+        // `commit_target`. The selection is the fallback for a commit asked
+        // for with nothing written, which has nothing to land anyway.
+        let Some(id) = self.commit_target.take().or_else(|| self.sole_selection()) else {
             self.echo = None;
             return;
         };
@@ -3670,36 +3783,7 @@ impl Studio {
         if after.crop != before.crop {
             patch.crop = Some(after.crop);
         }
-        for (slot, now, was) in [
-            (
-                concat_project::model::AnimationSlot::In,
-                &after.animation_in,
-                &before.animation_in,
-            ),
-            (
-                concat_project::model::AnimationSlot::Out,
-                &after.animation_out,
-                &before.animation_out,
-            ),
-            (
-                concat_project::model::AnimationSlot::Combo,
-                &after.animation_combo,
-                &before.animation_combo,
-            ),
-            (
-                concat_project::model::AnimationSlot::Loop,
-                &after.animation_loop,
-                &before.animation_loop,
-            ),
-        ] {
-            if now != was {
-                commands.push(Command::SetClipAnimation {
-                    clip_id: id.clone(),
-                    slot,
-                    animation: now.clone(),
-                });
-            }
-        }
+        commands.extend(key_commands(&id, &before, &after));
         if after.text != before.text {
             patch.text = Some(after.text.clone());
         }
@@ -3711,26 +3795,6 @@ impl Studio {
         }
         if patch != ClipPatch::default() {
             commands.push(Command::UpdateClip { clip_id: id, patch });
-        }
-        // The media's own field, edited through the clip: the echo's bin
-        // item against the session's.
-        let range_after = self
-            .echo
-            .as_ref()
-            .and_then(|echo| echo.media_by_id(&after.media_id))
-            .map(|item| item.color_range);
-        let range_before = self
-            .session
-            .as_ref()
-            .and_then(|session| session.project().media_by_id(&after.media_id))
-            .map(|item| item.color_range);
-        if let (Some(now), Some(was)) = (range_after, range_before)
-            && now != was
-        {
-            commands.push(Command::SetMediaColorRange {
-                media_id: after.media_id.clone(),
-                range: now,
-            });
         }
         self.echo = None;
         if commands.is_empty() {
@@ -3836,23 +3900,18 @@ impl Studio {
         } else {
             (w * clip.stretch_x, h * clip.stretch_y)
         };
-        // The placement at the playhead: the clip's own, moved by its
-        // animation, so the box follows a slide or a spin.
+        // The placement at the playhead: the clip's own, or its ride's
+        // where a property is keyed, so the box follows the keys.
+        let at = place_in(clip, self.playhead);
         let base = concat_core::timeline::Transform {
-            scale: clip.scale,
-            offset_x: clip.offset_x,
-            offset_y: clip.offset_y,
-            rotation: clip.rotation,
+            scale: shown(clip, model::KeyProperty::Scale, at),
+            offset_x: shown(clip, model::KeyProperty::OffsetX, at),
+            offset_y: shown(clip, model::KeyProperty::OffsetY, at),
+            rotation: shown(clip, model::KeyProperty::Rotation, at),
             stretch_x: clip.stretch_x,
             stretch_y: clip.stretch_y,
         };
-        let placed = match concat_project::animation::animation_of(clip) {
-            Some(animation) if clip.duration > 0.0 => {
-                let x = ((f64::from(self.playhead) - clip.start) / clip.duration).clamp(0.0, 1.0);
-                animation.transform_at(base, x)
-            }
-            _ => base,
-        };
+        let placed = base;
         let factor = placed.scale / clip.scale.max(1e-6);
         // A title anchored on an edge paints its block beside the clip's
         // position, not on it; the box goes where the block is. The offset
@@ -3988,10 +4047,15 @@ impl Studio {
             .filter(|clip| {
                 self.selection.iter().any(|held| held == &clip.id) && !self.locked(&clip.track_id)
             })
-            .map(|clip| StageOrigin {
-                clip: clip.id.clone(),
-                offset_x: clip.offset_x,
-                offset_y: clip.offset_y,
+            .map(|clip| {
+                // A keyed clip is dragged from where its ride has it at
+                // the playhead, not from a constant nothing shows.
+                let at = place_in(clip, self.playhead);
+                StageOrigin {
+                    clip: clip.id.clone(),
+                    offset_x: shown(clip, model::KeyProperty::OffsetX, at),
+                    offset_y: shown(clip, model::KeyProperty::OffsetY, at),
+                }
             })
             .collect();
         self.begin_echo();
@@ -4044,7 +4108,11 @@ impl Studio {
         self.gesture = if grip == 4 {
             Gesture::StageRotate {
                 clip: id.to_owned(),
-                rotation: clip.rotation,
+                rotation: shown(
+                    &clip,
+                    model::KeyProperty::Rotation,
+                    place_in(&clip, self.playhead),
+                ),
                 centre,
                 from: dy.atan2(dx),
             }
@@ -4089,7 +4157,11 @@ impl Studio {
         } else {
             Gesture::StageScale {
                 clip: id.to_owned(),
-                scale: clip.scale,
+                scale: shown(
+                    &clip,
+                    model::KeyProperty::Scale,
+                    place_in(&clip, self.playhead),
+                ),
                 centre,
                 from: dx.hypot(dy).max(1.0),
                 half,
@@ -4181,10 +4253,16 @@ impl Studio {
                         }
                     }
                 }
+                let playhead = self.playhead;
                 for origin in origins {
                     if let Some(clip) = self.echo_clip_mut(&origin.clip) {
-                        clip.offset_x = (origin.offset_x + dx).clamp(-1.0, 1.0);
-                        clip.offset_y = (origin.offset_y + dy).clamp(-1.0, 1.0);
+                        let at = place_in(clip, playhead);
+                        let (x, y) = (
+                            (origin.offset_x + dx).clamp(-1.0, 1.0),
+                            (origin.offset_y + dy).clamp(-1.0, 1.0),
+                        );
+                        write_keyable(clip, model::KeyProperty::OffsetX, x, at);
+                        write_keyable(clip, model::KeyProperty::OffsetY, y, at);
                     }
                 }
             }
@@ -4254,8 +4332,10 @@ impl Studio {
                         });
                     }
                 }
+                let playhead = self.playhead;
                 if let Some(clip) = self.echo_clip_mut(clip) {
-                    clip.scale = next.clamp(0.05, 8.0);
+                    let at = place_in(clip, playhead);
+                    write_keyable(clip, model::KeyProperty::Scale, next.clamp(0.05, 8.0), at);
                 }
             }
             Gesture::StageStretch {
@@ -4339,8 +4419,10 @@ impl Studio {
                 // Kept in the inspector's range, wrapping rather than
                 // stopping: a turn through the bottom carries on.
                 next = (next + 180.0).rem_euclid(360.0) - 180.0;
+                let playhead = self.playhead;
                 if let Some(clip) = self.echo_clip_mut(clip) {
-                    clip.rotation = next;
+                    let at = place_in(clip, playhead);
+                    write_keyable(clip, model::KeyProperty::Rotation, next, at);
                 }
             }
             _ => {
@@ -4486,7 +4568,8 @@ impl Studio {
         };
         self.cutout_jobs.insert(id.clone(), (false, 0.0));
         let cutouts = Arc::clone(&self.host.cutouts);
-        spawn(
+        let epoch = crate::host::project_epoch();
+        spawn_in_project(
             move || {
                 let mut last = (false, -1.0f32);
                 let reporting = id.clone();
@@ -4502,7 +4585,7 @@ impl Studio {
                     if now.0 != last.0 || now.1 - last.1 >= 0.01 {
                         last = now;
                         let id = reporting.clone();
-                        on_ui(move |studio, _, _| {
+                        on_ui_in_project(epoch, move |studio, _, _| {
                             if let Some(held) = studio.cutout_jobs.get_mut(&id) {
                                 *held = now;
                             }
@@ -4537,6 +4620,91 @@ impl Studio {
 
     /// Enhances the media of clip `id`: starts the job, unless one is
     /// running, and says so.
+    /// Writes one clip's sound as it plays - trimmed, at its speed, with its
+    /// level, fades and effects baked in - to a WAV in the project's audio
+    /// folder, and puts the file in the bin under Generated › Processed. A
+    /// copy, not a replacement: the clip keeps its media and its settings,
+    /// and the file is independent of both, so it can be cut, moved and
+    /// exported like any import.
+    ///
+    /// The export's own audio path does the work, on the clip alone: the
+    /// project is flattened with just this clip on its timeline, the one
+    /// export clip that comes out is moved to the origin, and the mixer
+    /// writes it the way it writes an export's soundtrack.
+    pub fn render_clip_sound(&mut self, id: &str) {
+        let Some(clip) = self.clip(id).cloned() else {
+            return;
+        };
+        if !self.clip_has_sound(&clip) {
+            self.notify(&t("This clip has no sound to render"), true);
+            return;
+        }
+        let Some(project_dir) = self
+            .session
+            .as_ref()
+            .map(|session| std::path::PathBuf::from(session.path()))
+        else {
+            return;
+        };
+        let mut alone = self.project().clone();
+        alone.active_mut().clips.retain(|held| held.id == clip.id);
+        let Some(mut piece) =
+            concat_export::flatten::flatten_timeline_in(&alone, None, Some(&project_dir))
+                .into_iter()
+                .next()
+        else {
+            self.notify(&t("This clip has no sound to render"), true);
+            return;
+        };
+        piece.start = 0.0;
+        piece.muted = false;
+        let duration = piece.duration;
+        let pieces = concat_export::audio_pieces(&piece);
+
+        let out_dir = project_dir.join("audio");
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis())
+            .unwrap_or(0);
+        let slug: String = clip
+            .name
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .take(40)
+            .collect();
+        let file = out_dir.join(format!("processed-{slug}-{stamp}.wav"));
+        let name = format!("{} · {}", clip.name, t("processed"));
+        log::info!(
+            "render: {} ({duration:.2}s, {} piece(s)) to {}",
+            clip.name,
+            pieces.len(),
+            file.display()
+        );
+        self.notify(&t("Rendering the sound…"), false);
+        spawn_in_project(
+            move || -> Result<concat_host::media::MediaSummary, String> {
+                std::fs::create_dir_all(&out_dir)
+                    .map_err(|error| format!("could not create {}: {error}", out_dir.display()))?;
+                concat_media::audio::mix_to_file(&pieces, duration, &file)
+                    .map_err(|error| error.to_string())?;
+                concat_host::media::probe(&file.to_string_lossy())
+            },
+            move |studio, _, _, result| match result {
+                Ok(summary) => {
+                    let mut item = summary.to_new_media();
+                    item.name = name;
+                    item.origin = Some(model::MediaOrigin::Processed);
+                    studio.apply(Command::AddMedia { item });
+                    studio.notify(&t("Sound rendered to Generated › Processed"), false);
+                }
+                Err(error) => {
+                    log::warn!("render: {error}");
+                    studio.notify(&tf("Could not render the sound: {0}", &[&error]), true);
+                }
+            },
+        );
+    }
+
     pub fn enhance_clip(&mut self, id: &str) {
         if !self.enhance_jobs.is_empty() || self.host.enhancers.is_busy() {
             self.notify(&t("Enhance is already at work; one clip at a time"), true);
@@ -4589,7 +4757,8 @@ impl Studio {
             false,
         );
         let enhancers = Arc::clone(&self.host.enhancers);
-        spawn(
+        let epoch = crate::host::project_epoch();
+        spawn_in_project(
             move || {
                 let mut last = (false, -1.0f32);
                 let reporting = clip_id.clone();
@@ -4603,7 +4772,7 @@ impl Studio {
                     if now.0 != last.0 || now.1 - last.1 >= 0.01 {
                         last = now;
                         let id = reporting.clone();
-                        on_ui(move |studio, _, _| {
+                        on_ui_in_project(epoch, move |studio, _, _| {
                             if let Some(held) = studio.enhance_jobs.get_mut(&id) {
                                 *held = now;
                             }
@@ -4923,7 +5092,7 @@ impl Studio {
         };
     }
 
-    /// CapCut-style freeze at the playhead on a picture clip.
+    /// A freeze frame at the playhead on a picture clip.
     ///
     /// Video extracts a JPEG still into the project cache; images reuse their
     /// media. The engine command splits the clip, inserts the hold, and
@@ -5156,13 +5325,45 @@ impl Studio {
     /// Opens a project as the session and leaves the launch screen, or
     /// says why it could not.
     pub fn open_project(&mut self, info: ProjectInfo) -> Result<(), String> {
+        if self
+            .host
+            .open_projects
+            .claim(&info.path, concat_api::Holder::Window)
+            .is_err()
+        {
+            return Err(t("This project is open through the Remote API"));
+        }
         match Session::open_info(&info) {
             Ok(session) => {
                 if let Err(error) = projects::remember(&self.host.dirs.config, &info) {
                     log::warn!("{error}");
                 }
                 self.pause();
+                // The proxies of media no longer in the project, or read
+                // as a range they no longer are, go now: nothing else
+                // sweeps cache/proxy.
+                let project_dir = std::path::Path::new(session.path());
+                let kept: HashSet<std::path::PathBuf> = session
+                    .project()
+                    .media
+                    .iter()
+                    .filter_map(|item| {
+                        concat_host::proxy::path_for(
+                            project_dir,
+                            &item.path,
+                            item.color_range.map(concat_export::engine_range),
+                        )
+                    })
+                    .collect();
+                let swept = concat_host::proxy::sweep(project_dir, &kept);
+                if swept > 0 {
+                    log::info!("{swept} stale proxies swept from {}", project_dir.display());
+                }
                 self.session = Some(session);
+                crate::host::next_project_epoch();
+                self.art_failed.clear();
+                self.art_stamp = None;
+                self.proxied.clear();
                 self.echo = None;
                 self.dirty = false;
                 self.project_name = info.name.clone();
@@ -5210,7 +5411,10 @@ impl Studio {
                 }
                 Ok(())
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                self.host.open_projects.release(&info.path);
+                Err(error)
+            }
         }
     }
 
@@ -5249,7 +5453,20 @@ impl Studio {
             }
         }
         self.autosave.stop();
+        if let Some(session) = self.session.as_ref() {
+            self.host.open_projects.release(session.path());
+        }
         self.session = None;
+        // Whatever a worker still brings back for this project is dropped
+        // at delivery; the sheets that were waiting on one stop waiting.
+        crate::host::next_project_epoch();
+        self.art_failed.clear();
+        self.art_stamp = None;
+        self.proxied.clear();
+        self.captions.running = false;
+        self.captions.progress = 0.0;
+        self.speech.running = false;
+        self.speech.progress = 0.0;
         self.echo = None;
         self.dirty = false;
         self.selection.clear();
@@ -5371,8 +5588,24 @@ impl Studio {
     /// failed. With `announce`, a clean reload is reported too, with the
     /// folder, which is how a newcomer learns where packages go.
     pub fn reload_packages(&mut self, announce: bool) -> usize {
+        /// A custom package's shader runs once over a picture this many
+        /// pixels a side before the package is offered: enough that a loop
+        /// bounded in the thousands per pixel shows, and a real frame's
+        /// worth of work does not.
+        const TRIAL_SIDE: u32 = 512;
+        /// How long that trial may take before the package is refused.
+        const TRIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
         let dir = Self::looks_dir(&self.host.dirs);
-        let errors = Catalogue::install(&dir);
+        let monitor = &self.host.monitor;
+        let errors = Catalogue::install_with(&dir, &mut |package| {
+            let Some(pass) = package.trial_pass() else {
+                return Ok(());
+            };
+            match monitor.trial(&pass, TRIAL_SIDE, TRIAL_TIMEOUT) {
+                Some(Err(why)) => Err(format!("its shader failed its trial: {why}")),
+                _ => Ok(()),
+            }
+        });
         for error in &errors {
             log::warn!("package: {error}");
         }
@@ -5751,6 +5984,14 @@ impl Studio {
         // The keyframe cluster's state, on its own global: every keyable row
         // in the inspector reads it, and none of them is threaded to.
         let keys = app.global::<Keyframes>();
+        // The Keyframes panel: set whole, since a row holds a model of its
+        // keys and cannot be compared for a diff.
+        models.key_editor_rows.set_vec(self.key_editor_rows());
+        app.global::<KeyEditor>().set_at(
+            self.sole_selection()
+                .and_then(|id| self.clip(&id))
+                .map_or(0.0, |clip| place_in(clip, self.playhead) as f32),
+        );
         let rows = self.key_rows();
         keys.set_available(!rows.is_empty());
         sync(&models.key_rows, rows);
@@ -5765,6 +6006,7 @@ impl Studio {
             .unwrap_or(0);
         editor.set_timeline_current_tab(active as i32);
         editor.set_playhead(self.playhead);
+        sync(&models.key_marks, self.key_marks());
         editor.set_scroll_left(self.lanes.scroll_left);
         editor.set_seconds_per_pixel(self.lanes.seconds_per_pixel);
         editor.set_frame_rate(self.frame_rate());
@@ -5959,6 +6201,492 @@ impl Studio {
             .collect()
     }
 
+    /// The Keyframes panel's rows: the six properties of the selected
+    /// clip, and every Adjust knob of it that carries keys, each with its
+    /// keys along the clip, what it is worth at the playhead, and the ease
+    /// into the key the playhead is on or heading for.
+    pub fn key_editor_rows(&self) -> Vec<KeyRowData> {
+        let Some(clip) = self.sole_selection().and_then(|id| self.clip(&id)) else {
+            return Vec::new();
+        };
+        let at = place_in(clip, self.playhead);
+        let near = |a: f64, b: f64| (a - b).abs() <= model::KEY_EPSILON;
+        // The ease shown for a run of keys: the one into the key at the
+        // playhead, else into the next key - the segment being played -
+        // when there is a key behind it to ease from.
+        let ease_of = |keys: &[(f64, model::KeyEase)]| -> (bool, [f32; 4], f32) {
+            let target = keys
+                .iter()
+                .find(|(key_at, _)| near(*key_at, at))
+                .or_else(|| keys.iter().find(|(key_at, _)| *key_at > at));
+            match target {
+                Some((key_at, ease))
+                    if keys
+                        .iter()
+                        .any(|(other, _)| *other < key_at - model::KEY_EPSILON) =>
+                {
+                    let [x1, y1, x2, y2] = ease.0;
+                    (
+                        true,
+                        [x1 as f32, y1 as f32, x2 as f32, y2 as f32],
+                        *key_at as f32,
+                    )
+                }
+                _ => (false, [0.0, 0.0, 1.0, 1.0], 0.0),
+            }
+        };
+        let marks = |ats: &[f64]| -> ModelRc<KeyMarkData> {
+            ModelRc::new(VecModel::from(
+                ats.iter()
+                    .map(|&key_at| KeyMarkData {
+                        at: key_at as f32,
+                        here: near(key_at, at),
+                    })
+                    .collect::<Vec<_>>(),
+            ))
+        };
+        let mut rows = Vec::new();
+        for property in model::KeyProperty::ALL {
+            let keys: Vec<(f64, model::KeyEase)> = clip
+                .keys_on(property)
+                .map(|key| (key.at, key.ease))
+                .collect();
+            let ats: Vec<f64> = keys.iter().map(|(key_at, _)| *key_at).collect();
+            // The same ranges and units as the inspector's knobs.
+            let (label, minimum, maximum, step, default_value, fmt, unit, unit_scale) =
+                match property {
+                    model::KeyProperty::Scale => (
+                        t("Scale"),
+                        0.05,
+                        8.0,
+                        0.01,
+                        1.0,
+                        ParamFormat::Fraction,
+                        "%",
+                        100.0,
+                    ),
+                    model::KeyProperty::OffsetX => (
+                        t("Position X"),
+                        -1.0,
+                        1.0,
+                        0.005,
+                        0.0,
+                        ParamFormat::Centred,
+                        "%",
+                        100.0,
+                    ),
+                    model::KeyProperty::OffsetY => (
+                        t("Position Y"),
+                        -1.0,
+                        1.0,
+                        0.005,
+                        0.0,
+                        ParamFormat::Centred,
+                        "%",
+                        100.0,
+                    ),
+                    model::KeyProperty::Rotation => (
+                        t("Rotation"),
+                        -180.0,
+                        180.0,
+                        1.0,
+                        0.0,
+                        ParamFormat::Degrees,
+                        "°",
+                        1.0,
+                    ),
+                    model::KeyProperty::Opacity => (
+                        t("Opacity"),
+                        0.0,
+                        1.0,
+                        0.01,
+                        1.0,
+                        ParamFormat::Fraction,
+                        "%",
+                        100.0,
+                    ),
+                    model::KeyProperty::Volume => (
+                        t("Level"),
+                        -60.0,
+                        24.0,
+                        0.5,
+                        0.0,
+                        ParamFormat::Gain,
+                        "",
+                        1.0,
+                    ),
+                };
+            let shown_value = shown(clip, property, at);
+            let value = if property == model::KeyProperty::Volume {
+                // The level knob speaks decibels, floored where silence is.
+                if shown_value <= 0.001 {
+                    -60.0
+                } else {
+                    (20.0 * shown_value.log10()).clamp(-60.0, 24.0)
+                }
+            } else {
+                shown_value
+            };
+            let (prev, next) = clip.keys_around(property, at);
+            let (has_ease, ease, ease_at) = ease_of(&keys);
+            rows.push(KeyRowData {
+                field: key_field_of(property),
+                param: SharedString::default(),
+                label: label.into(),
+                keys: marks(&ats),
+                state: ClipKeyData {
+                    field: key_field_of(property),
+                    keyed: !keys.is_empty(),
+                    here: clip.key_at(property, at).is_some(),
+                    prev: prev.is_some(),
+                    next: next.is_some(),
+                },
+                value: value as f32,
+                minimum,
+                maximum,
+                step,
+                default_value,
+                fmt,
+                unit: unit.into(),
+                unit_scale,
+                ease_x1: ease[0],
+                ease_y1: ease[1],
+                ease_x2: ease[2],
+                ease_y2: ease[3],
+                has_ease,
+                ease_at,
+            });
+        }
+        if let Some(link) = clip
+            .video_effects
+            .iter()
+            .find(|entry| entry.id == ADJUST_ID)
+        {
+            let inside = self.key_point().map(|(_, at)| at);
+            for row in adjust_rows(&clip.video_effects, inside) {
+                if !row.keyed {
+                    continue;
+                }
+                let keys: Vec<(f64, model::KeyEase)> = link
+                    .keys_on(&row.key)
+                    .iter()
+                    .map(|key| (key.at, key.ease))
+                    .collect();
+                let ats: Vec<f64> = keys.iter().map(|(key_at, _)| *key_at).collect();
+                let (has_ease, ease, ease_at) = ease_of(&keys);
+                rows.push(KeyRowData {
+                    field: ClipField::Scale,
+                    param: row.key.clone(),
+                    label: row.label.clone(),
+                    keys: marks(&ats),
+                    state: ClipKeyData {
+                        field: ClipField::Scale,
+                        keyed: true,
+                        here: row.here,
+                        prev: row.prev,
+                        next: row.next,
+                    },
+                    value: row.value,
+                    minimum: row.min,
+                    maximum: row.max,
+                    step: row.step,
+                    default_value: row.default_value,
+                    fmt: row.fmt,
+                    unit: row.unit.clone(),
+                    unit_scale: 1.0,
+                    ease_x1: ease[0],
+                    ease_y1: ease[1],
+                    ease_x2: ease[2],
+                    ease_y2: ease[3],
+                    has_ease,
+                    ease_at,
+                });
+            }
+        }
+        rows
+    }
+
+    /// The selected clip's keys as instants on the timeline, every property
+    /// and Adjust knob together, one diamond per instant: what the ruler
+    /// draws while exactly one clip is selected (#188).
+    pub fn key_marks(&self) -> Vec<f32> {
+        let Some(clip) = self.sole_selection().and_then(|id| self.clip(&id)) else {
+            return Vec::new();
+        };
+        let mut ats: Vec<f64> = model::KeyProperty::ALL
+            .iter()
+            .flat_map(|&property| clip.keys_on(property).map(|key| key.at))
+            .collect();
+        if let Some(link) = clip
+            .video_effects
+            .iter()
+            .find(|entry| entry.id == ADJUST_ID)
+        {
+            ats.extend(link.keys.values().flatten().map(|key| key.at));
+        }
+        ats.sort_by(f64::total_cmp);
+        ats.dedup_by(|a, b| (*a - *b).abs() <= model::KEY_EPSILON);
+        ats.iter()
+            .map(|at| (clip.start + at * clip.duration) as f32)
+            .collect()
+    }
+
+    /// Moves every key of the selected clip that sits at the instant
+    /// `from` to the instant `to`, as one undo step: what a dragged ruler
+    /// diamond does.
+    pub fn move_keys_at(&mut self, from: f32, to: f32) {
+        let Some(clip) = self.sole_selection().and_then(|id| self.clip(&id)) else {
+            return;
+        };
+        if clip.duration <= 0.0 {
+            return;
+        }
+        let clip_id = clip.id.clone();
+        let from_at = (f64::from(from) - clip.start) / clip.duration;
+        let to_at = ((f64::from(to) - clip.start) / clip.duration).clamp(0.0, 1.0);
+        let mut commands = Vec::new();
+        for property in model::KeyProperty::ALL {
+            let Some(index) = clip.key_at(property, from_at) else {
+                continue;
+            };
+            let key = &clip.keys[index];
+            commands.push(Command::ClearClipKey {
+                clip_id: clip_id.clone(),
+                property,
+                at: key.at,
+            });
+            commands.push(Command::SetClipKey {
+                clip_id: clip_id.clone(),
+                property,
+                at: to_at,
+                value: key.value,
+                ease: key.ease,
+            });
+        }
+        if let Some(entry) = clip
+            .video_effects
+            .iter()
+            .position(|entry| entry.id == ADJUST_ID)
+        {
+            let link = &clip.video_effects[entry];
+            for name in link.keys.keys() {
+                let Some(index) = link.key_at(name, from_at) else {
+                    continue;
+                };
+                let key = &link.keys_on(name)[index];
+                commands.push(Command::ClearEffectKey {
+                    clip_id: clip_id.clone(),
+                    entry,
+                    key: name.clone(),
+                    at: key.at,
+                });
+                commands.push(Command::SetEffectKey {
+                    clip_id: clip_id.clone(),
+                    entry,
+                    key: name.clone(),
+                    at: to_at,
+                    value: key.value,
+                    ease: key.ease,
+                });
+            }
+        }
+        if !commands.is_empty() {
+            self.apply(Command::Batch { commands });
+        }
+    }
+
+    /// Moves the playhead to `at` of the selected clip, `0..1`.
+    pub fn jump_to_key(&mut self, at: f32) {
+        let Some(clip) = self.sole_selection().and_then(|id| self.clip(&id)) else {
+            return;
+        };
+        let (start, duration) = (clip.start, clip.duration);
+        self.seek((start + f64::from(at).clamp(0.0, 1.0) * duration) as f32);
+    }
+
+    /// Moves the key at `from` to `to` on a property, or on the Adjust
+    /// knob `param` names: the same value and ease at the new place, as
+    /// one undo step.
+    pub fn move_key(&mut self, field: ClipField, param: &str, from: f32, to: f32) {
+        let Some(clip) = self.sole_selection().and_then(|id| self.clip(&id)) else {
+            return;
+        };
+        let clip_id = clip.id.clone();
+        let (from, to) = (f64::from(from), f64::from(to).clamp(0.0, 1.0));
+        let commands = if param.is_empty() {
+            let Some(property) = Self::key_property_of(field) else {
+                return;
+            };
+            let Some(index) = clip.key_at(property, from) else {
+                return;
+            };
+            let key = &clip.keys[index];
+            let (value, ease) = (key.value, key.ease);
+            vec![
+                Command::ClearClipKey {
+                    clip_id: clip_id.clone(),
+                    property,
+                    at: from,
+                },
+                Command::SetClipKey {
+                    clip_id,
+                    property,
+                    at: to,
+                    value,
+                    ease,
+                },
+            ]
+        } else {
+            let Some(entry) = clip
+                .video_effects
+                .iter()
+                .position(|entry| entry.id == ADJUST_ID)
+            else {
+                return;
+            };
+            let link = &clip.video_effects[entry];
+            let Some(index) = link.key_at(param, from) else {
+                return;
+            };
+            let key = &link.keys_on(param)[index];
+            let (value, ease) = (key.value, key.ease);
+            vec![
+                Command::ClearEffectKey {
+                    clip_id: clip_id.clone(),
+                    entry,
+                    key: param.to_owned(),
+                    at: from,
+                },
+                Command::SetEffectKey {
+                    clip_id,
+                    entry,
+                    key: param.to_owned(),
+                    at: to,
+                    value,
+                    ease,
+                },
+            ]
+        };
+        self.apply(Command::Batch { commands });
+    }
+
+    /// Sets the ease into the key at `at`. A drag of the curve editor is
+    /// many of these, folded into one undo step.
+    pub fn set_key_ease(&mut self, field: ClipField, param: &str, at: f32, ease: [f32; 4]) {
+        let Some(clip) = self.sole_selection().and_then(|id| self.clip(&id)) else {
+            return;
+        };
+        let clip_id = clip.id.clone();
+        let at = f64::from(at);
+        let ease = model::KeyEase(ease.map(f64::from)).sane();
+        let command = if param.is_empty() {
+            let Some(property) = Self::key_property_of(field) else {
+                return;
+            };
+            let Some(index) = clip.key_at(property, at) else {
+                return;
+            };
+            Command::SetClipKey {
+                clip_id,
+                property,
+                at,
+                value: clip.keys[index].value,
+                ease,
+            }
+        } else {
+            let Some(entry) = clip
+                .video_effects
+                .iter()
+                .position(|entry| entry.id == ADJUST_ID)
+            else {
+                return;
+            };
+            let link = &clip.video_effects[entry];
+            let Some(index) = link.key_at(param, at) else {
+                return;
+            };
+            Command::SetEffectKey {
+                clip_id,
+                entry,
+                key: param.to_owned(),
+                at,
+                value: link.keys_on(param)[index].value,
+                ease,
+            }
+        };
+        self.apply_within("ease", command);
+    }
+
+    /// Moves the playhead to the nearest key behind (-1) or ahead (+1) on
+    /// any knob of the selected clip.
+    pub fn step_any_key(&mut self, delta: i32) {
+        let Some((clip, at)) = self.key_point() else {
+            return;
+        };
+        let mut candidates: Vec<f64> = model::KeyProperty::ALL
+            .iter()
+            .flat_map(|&property| clip.keys_on(property).map(|key| key.at))
+            .collect();
+        if let Some(link) = clip
+            .video_effects
+            .iter()
+            .find(|entry| entry.id == ADJUST_ID)
+        {
+            candidates.extend(link.keys.values().flatten().map(|key| key.at));
+        }
+        let target = if delta < 0 {
+            candidates
+                .iter()
+                .copied()
+                .filter(|&key_at| key_at < at - model::KEY_EPSILON)
+                .reduce(f64::max)
+        } else {
+            candidates
+                .iter()
+                .copied()
+                .filter(|&key_at| key_at > at + model::KEY_EPSILON)
+                .reduce(f64::min)
+        };
+        let Some(target) = target else {
+            return;
+        };
+        let (start, duration) = (clip.start, clip.duration);
+        self.seek((start + target * duration) as f32);
+    }
+
+    /// Takes every key off the selected clip: its properties and its
+    /// Adjust knobs, as one undo step.
+    pub fn clear_all_keys(&mut self) {
+        let Some(clip) = self.sole_selection().and_then(|id| self.clip(&id)) else {
+            return;
+        };
+        let clip_id = clip.id.clone();
+        let mut commands: Vec<Command> = model::KeyProperty::ALL
+            .iter()
+            .filter(|&&property| clip.is_keyed(property))
+            .map(|&property| Command::ClearClipKeys {
+                clip_id: clip_id.clone(),
+                property,
+            })
+            .collect();
+        if let Some(entry) = clip
+            .video_effects
+            .iter()
+            .position(|entry| entry.id == ADJUST_ID)
+        {
+            for key in clip.video_effects[entry].keys.keys() {
+                commands.push(Command::ClearEffectKeys {
+                    clip_id: clip_id.clone(),
+                    entry,
+                    key: key.clone(),
+                });
+            }
+        }
+        if !commands.is_empty() {
+            self.apply(Command::Batch { commands });
+        }
+    }
+
     /// Puts a key on the field at the playhead, or takes off the one there.
     ///
     /// The value a new key gets is whatever the property is worth at that
@@ -6054,6 +6782,9 @@ impl Studio {
         let Some(clip) = self.sole_selection().and_then(|id| self.clip(&id)) else {
             return SelectedClipData::default();
         };
+        // A keyed property shows what it is worth at the playhead, which is
+        // what the knob edits.
+        let at = place_in(clip, self.playhead);
         let text = clip.text.clone().unwrap_or_default();
         let fill = colour_of(&text.color);
         let stroke = colour_of(&text.stroke_color);
@@ -6065,19 +6796,6 @@ impl Studio {
         });
         SelectedClipData {
             present: true,
-            // -1 hides the control: a title, a layer or a sound has no
-            // picture file whose levels could be named.
-            color_range: if clip.kind.is_visual() {
-                self.project()
-                    .media_by_id(&clip.media_id)
-                    .map_or(-1, |item| match item.color_range {
-                        None => 0,
-                        Some(model::ColorRange::Limited) => 1,
-                        Some(model::ColorRange::Full) => 2,
-                    })
-            } else {
-                -1
-            },
             frame_width: self.output_size().0 as i32,
             frame_height: self.output_size().1 as i32,
             id: clip.id.as_str().into(),
@@ -6102,14 +6820,14 @@ impl Studio {
                 .as_ref()
                 .map(|transition| transition.duration as f32)
                 .unwrap_or(0.5),
-            scale: clip.scale as f32,
-            offset_x: clip.offset_x as f32,
-            offset_y: clip.offset_y as f32,
-            rotation: clip.rotation as f32,
+            scale: shown(clip, model::KeyProperty::Scale, at) as f32,
+            offset_x: shown(clip, model::KeyProperty::OffsetX, at) as f32,
+            offset_y: shown(clip, model::KeyProperty::OffsetY, at) as f32,
+            rotation: shown(clip, model::KeyProperty::Rotation, at) as f32,
             stretch_x: clip.stretch_x as f32,
             stretch_y: clip.stretch_y as f32,
-            opacity: clip.opacity as f32,
-            volume: clip.volume as f32,
+            opacity: shown(clip, model::KeyProperty::Opacity, at) as f32,
+            volume: shown(clip, model::KeyProperty::Volume, at) as f32,
             audio_track: self
                 .project()
                 .media_by_id(&clip.media_id)
@@ -6124,34 +6842,6 @@ impl Studio {
                     .unwrap_or(concat_project::speed::PRESETS.len() as i32),
             },
             reverse: clip.reverse,
-            anim_in: slot_index(concat_project::model::AnimationSlot::In, &clip.animation_in),
-            anim_out: slot_index(
-                concat_project::model::AnimationSlot::Out,
-                &clip.animation_out,
-            ),
-            anim_combo: slot_index(
-                concat_project::model::AnimationSlot::Combo,
-                &clip.animation_combo,
-            ),
-            anim_loop: slot_index(
-                concat_project::model::AnimationSlot::Loop,
-                &clip.animation_loop,
-            ),
-            anim_in_duration: clip
-                .animation_in
-                .as_ref()
-                .map(|set| set.duration as f32)
-                .unwrap_or(0.5),
-            anim_out_duration: clip
-                .animation_out
-                .as_ref()
-                .map(|set| set.duration as f32)
-                .unwrap_or(0.5),
-            anim_loop_duration: clip
-                .animation_loop
-                .as_ref()
-                .map(|set| set.duration as f32)
-                .unwrap_or(1.0),
             flip_h: clip.flip_h,
             flip_v: clip.flip_v,
             blend: concat_core::Blend::ALL
@@ -6306,7 +6996,8 @@ impl Studio {
         self.region_job = Some(key.clone());
         self.cutout_jobs.entry(key.clone()).or_insert((false, 0.0));
         let brushes = Arc::clone(&self.host.brushes);
-        spawn(
+        let epoch = crate::host::project_epoch();
+        spawn_in_project(
             move || {
                 let reporting = key.clone();
                 let result = brushes.read(&request, &mut |progress| {
@@ -6317,7 +7008,7 @@ impl Studio {
                         concat_host::cutout::Progress::Analysing(fraction) => (false, fraction),
                     };
                     let key = reporting.clone();
-                    on_ui(move |studio, _, _| {
+                    on_ui_in_project(epoch, move |studio, _, _| {
                         if let Some(held) = studio.cutout_jobs.get_mut(&key) {
                             *held = now;
                         }
@@ -6489,6 +7180,12 @@ impl Studio {
                 .filter(|item| item.origin == Some(model::MediaOrigin::Speech))
                 .count() as i32,
         );
+        editor.set_media_count_processed(
+            items
+                .iter()
+                .filter(|item| item.origin == Some(model::MediaOrigin::Processed))
+                .count() as i32,
+        );
         editor.set_media_selected_count(self.media.selected.len() as i32);
         editor.set_importing(false);
 
@@ -6553,8 +7250,21 @@ impl Studio {
                 .map(|model| SharedString::from(model.name.as_str()))
                 .collect(),
         );
+        sync(
+            &models.speech_model_details,
+            self.speech.model_detail_rows(self),
+        );
         sync(&models.speakers, self.speech.speaker_rows());
         sync(&models.speaker_details, self.speech.speaker_detail_rows());
+        sync(&models.speech_samples, self.speech.sample_rows(self));
+        sync(
+            &models.speech_sample_waves,
+            self.speech.sample_wave_rows(self),
+        );
+        sync(
+            &models.speech_sample_details,
+            self.speech.sample_detail_rows(self),
+        );
         app.set_speech(self.speech.data(self));
 
         let bar = self.menu_bar();
@@ -6567,6 +7277,25 @@ impl Studio {
     /// Asks the workers for anything the launch screen or the bin is
     /// missing. Separate from `publish` because it mutates.
     pub fn refresh_art(&mut self) {
+        // Called after every callback, the pointer stream included. The
+        // scan over every media item - stats for proxies, JPEGs read back,
+        // decodes queued - runs when the document, the screen or what is
+        // pending changed, and is one comparison otherwise. The lanes'
+        // cell strips follow the view, which moves on that stream, so
+        // they are asked for every time; that walk is hash lookups
+        // (audit 2026-09-23, #11).
+        let stamp = (
+            self.revision,
+            self.on_start,
+            self.art_pending.len() + self.posters_pending.len(),
+        );
+        if self.art_stamp == Some(stamp) {
+            if !self.on_start {
+                self.request_window_art();
+            }
+            return;
+        }
+        self.art_stamp = Some(stamp);
         if self.on_start {
             self.request_posters();
         } else {
@@ -6575,8 +7304,12 @@ impl Studio {
         }
     }
 
-    /// The right-click menu for the clip it was opened on.
+    /// The right-click menu: the bin card's when it was opened on one,
+    /// else the clip's.
     fn menu(&self) -> Vec<MenuItemData> {
+        if let Some(id) = self.menu_media.as_deref() {
+            return self.media_menu(id);
+        }
         let Some(clip) = self.menu_target.as_ref().and_then(|id| self.clip(id)) else {
             return Vec::new();
         };
@@ -6676,6 +7409,20 @@ impl Studio {
             ));
             rows.push(rule());
         }
+        // The clip's sound, written out as it plays, as a file of its own
+        // in the bin. For anything with sound in it; a clip whose track is
+        // muted still renders, since the file is the clip's and not the
+        // mix's.
+        if clip.kind == model::ClipKind::Audio || clip.kind == model::ClipKind::Video {
+            rows.push(action(
+                "render-sound",
+                t("Render the sound as a file"),
+                Glyph::Waveform,
+                "",
+                self.clip_has_sound(clip),
+            ));
+            rows.push(rule());
+        }
         let audible = clip.kind != model::ClipKind::Image;
         rows.push(check(
             "mute",
@@ -6709,6 +7456,109 @@ impl Studio {
             checked: false,
         });
         rows
+    }
+
+    /// The right-click menu for a card in the bin: the file's verbs, and
+    /// the one attribute a file has that every clip cut from it inherits.
+    ///
+    /// A picture's colour range is the media's rather than any clip's -
+    /// the fix for a file that lies about its levels is a fact about the
+    /// file - so it is set here, off the card, the way Resolve keeps Clip
+    /// Attributes off the media pool, and not in a clip's inspector where
+    /// it read as a property of the cut. Auto is the file's tag, and the
+    /// codec's convention where there is none; see
+    /// `concat_media::ColorRange::implied`.
+    /// https://github.com/jub0t/Concat/issues/103
+    fn media_menu(&self, id: &str) -> Vec<MenuItemData> {
+        let Some(item) = self.project().media_by_id(id) else {
+            return Vec::new();
+        };
+        let action = |id: &str, label: String, glyph: Glyph, danger: bool| MenuItemData {
+            id: id.into(),
+            label: label.into(),
+            kind: MenuRow::Action,
+            glyph,
+            shortcut: "".into(),
+            enabled: true,
+            danger,
+            checkable: false,
+            checked: false,
+        };
+        // The levels go where a shortcut would: the number is what the
+        // word means, and a person who knows one knows the other.
+        let check = |id: &str, label: String, levels: &str, on: bool| MenuItemData {
+            id: id.into(),
+            label: label.into(),
+            kind: MenuRow::Action,
+            glyph: Glyph::None,
+            shortcut: levels.into(),
+            enabled: true,
+            danger: false,
+            checkable: true,
+            checked: on,
+        };
+        let rule = || MenuItemData {
+            kind: MenuRow::Separator,
+            ..Default::default()
+        };
+        let mut rows = vec![
+            action("add", t("Add at playhead"), Glyph::Plus, false),
+            rule(),
+        ];
+        if item.kind != model::MediaKind::Audio {
+            let range = item.color_range;
+            rows.push(MenuItemData {
+                label: t("Colour range").to_uppercase().into(),
+                kind: MenuRow::Label,
+                ..Default::default()
+            });
+            rows.push(check("range-auto", t("Auto"), "", range.is_none()));
+            rows.push(check(
+                "range-limited",
+                t("Limited"),
+                "16-235",
+                range == Some(model::ColorRange::Limited),
+            ));
+            rows.push(check(
+                "range-full",
+                t("Full"),
+                "0-255",
+                range == Some(model::ColorRange::Full),
+            ));
+            rows.push(rule());
+        }
+        rows.push(action("remove", t("Remove"), Glyph::Trash, true));
+        rows
+    }
+
+    /// A row of a bin card's menu, for the media it was opened on.
+    pub fn media_action(&mut self, id: &str, action: &str) {
+        let Some(row) = self.media.row_of(id) else {
+            return;
+        };
+        if self.project().media_by_id(id).is_none() {
+            return;
+        }
+        let range = |range| Command::SetMediaColorRange {
+            media_id: id.to_owned(),
+            range,
+        };
+        match action {
+            "add" => self.place_at_playhead(&format!("media:{row}")),
+            "remove" => self.handle(crate::panes::Msg::Media(
+                crate::panes::media_bin::MediaMsg::Remove(row),
+            )),
+            "range-auto" => {
+                self.apply(range(None));
+            }
+            "range-limited" => {
+                self.apply(range(Some(model::ColorRange::Limited)));
+            }
+            "range-full" => {
+                self.apply(range(Some(model::ColorRange::Full)));
+            }
+            _ => {}
+        }
     }
 
     pub fn menu_height(rows: &[MenuItemData]) -> f32 {
@@ -7111,6 +7961,7 @@ impl Studio {
             }
             "freeze" => self.freeze_at_playhead(),
             "enhance" => self.enhance_clip(id),
+            "render-sound" => self.render_clip_sound(id),
             "detach" => {
                 self.apply(Command::DetachAudio {
                     clip_id: id.to_owned(),
@@ -7186,7 +8037,7 @@ impl Studio {
 
 #[cfg(test)]
 mod tests {
-    use super::{Footprint, Studio};
+    use super::{Command, Footprint, Studio, key_commands, place_in, shown, write_keyable};
 
     const FRAME: (u32, u32) = (1920, 1080);
 
@@ -7279,5 +8130,43 @@ mod tests {
         let x = 0.5 + 540.0 / 1920.0;
         assert!(box_.contains(x, 0.5 + 6.0 / 1080.0, FRAME));
         assert!(!box_.contains(x, 0.5 - 6.0 / 1080.0, FRAME));
+    }
+
+    /// A knob over a property with no keys writes the constant; over one
+    /// that rides, it writes the key at the playhead and leaves the
+    /// constant alone. The echo's keys then become one command each.
+    #[test]
+    fn a_keyed_property_is_written_as_a_key_and_committed_as_commands() {
+        use concat_project::model::{Clip, ClipKind, KeyEase, KeyProperty};
+        let before = Clip::blank("c1", "t1", ClipKind::Video, "clip", 0.0, 10.0);
+        let mut after = before.clone();
+        write_keyable(&mut after, KeyProperty::Scale, 2.0, 0.5);
+        assert_eq!(after.scale, 2.0, "no keys: the constant");
+        assert!(key_commands("c1", &before, &after).is_empty());
+
+        after.set_key(KeyProperty::Scale, 0.25, 1.0, KeyEase::LINEAR);
+        write_keyable(&mut after, KeyProperty::Scale, 3.0, 0.75);
+        assert_eq!(after.scale, 2.0, "keyed: the constant is left alone");
+        assert_eq!(after.value_at(KeyProperty::Scale, 0.75), 3.0);
+        assert_eq!(shown(&after, KeyProperty::Scale, 0.75), 3.0);
+        let commands = key_commands("c1", &before, &after);
+        assert_eq!(commands.len(), 2, "one per key: {commands:?}");
+        assert!(commands.iter().all(|command| matches!(
+            command,
+            Command::SetClipKey {
+                property: KeyProperty::Scale,
+                ..
+            }
+        )));
+
+        let mut gone = after.clone();
+        gone.clear_key(KeyProperty::Scale, 0.25);
+        let commands = key_commands("c1", &after, &gone);
+        assert!(
+            matches!(commands.as_slice(), [Command::ClearClipKey { at, .. }] if (*at - 0.25).abs() < 1e-9),
+            "{commands:?}"
+        );
+        assert_eq!(place_in(&after, 2.5), 0.25);
+        assert_eq!(place_in(&after, 12.0), 1.0, "held to the end");
     }
 }

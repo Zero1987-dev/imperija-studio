@@ -46,12 +46,15 @@ import {
 } from "timeline/model.slint";
 
 // Re-exported so main.rs can reach the globals and the struct.
+import { KeyEditor, KeyMarkData, KeyRowData } from "inspector/keyframes-panel.slint";
+
 export {
     Curves, Fmt, Focus, Payload, Theme, Bezier, Editor, I18n,
     AppliedEntryData, AppliedParamData, CatalogueEntryData, Library, LibraryViewData, ParamFormat,
     DockDivider, DockSide, PaneKind, SeatBox,
     EffectData, MediaFilter, MediaItemData, MediaKind, TextPresetData,
     ClipData, ClipField, ClipKeyData, ClipKind, ClipTextField, DropData, Keyframes,
+    KeyEditor, KeyMarkData, KeyRowData,
     SelectedClipData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
     TimelineTool, TrackData, TrackSize, MenuItemData, MenuRow, ExportData, ExportPhase, ModelData, SettingsData,
     ChipOption, RecentProjectData, StartData, SystemFactData, ToastData, ProjectSheetData,
@@ -203,10 +206,13 @@ export component App inherits Window {
     callback settings-show-log();
     callback settings-language-changed(index: int);
     callback settings-theme-changed(dark: bool);
+    callback settings-accent-changed(index: int);
+    callback settings-accent-custom-changed(colour: color);
     callback settings-playhead-stops-changed(on: bool);
     callback settings-custom-context-actions-changed(on: bool);
     callback settings-magnetic-changed(on: bool);
     callback settings-hardware-decode-changed(on: bool);
+    callback settings-speech-accelerated-changed(on: bool);
     callback settings-download-source-changed(index: int);
     callback settings-download-base-edited(text: string);
     callback settings-server-enabled-changed(on: bool);
@@ -245,13 +251,26 @@ export component App inherits Window {
 
     in property <SpeechSheetData> speech;
     in property <[string]> speech-models;
+    in property <[string]> speech-model-details;
     in property <[string]> speech-voices;
     in property <[string]> speech-voice-details;
+    /// The recordings in the bin a voice can be taken from: their names,
+    /// their waveforms as path commands, and their lengths.
+    in property <[string]> speech-samples;
+    in property <[string]> speech-sample-waves;
+    in property <[string]> speech-sample-details;
     callback speech-closed();
     callback speech-text-edited(text: string);
     callback speech-voice-changed(index: int);
     callback speech-model-changed(index: int);
-    callback speech-pace-changed(index: int);
+    callback speech-speed-changed(value: float);
+    callback speech-quality-changed(index: int);
+    callback speech-pauses-changed(value: float);
+    callback speech-reference-start-changed(seconds: float);
+    callback speech-use-sample-changed(on: bool);
+    callback speech-sample-changed(index: int);
+    /// See SpeechDialog.insert-tag: a string cut Rust does for the sheet.
+    pure callback speech-insert-tag(text: string, tag: string, at: int) -> string;
     callback speech-begin();
     callback speech-cancel();
 
@@ -330,12 +349,13 @@ export component App inherits Window {
             activated => { root.app-menu-selected("redo"); }
         }
 
-        // The rest of the keyboard, the way CapCut lays it out: the chord
-        // key with a letter for an edit, a bare letter for a tool, the
-        // arrows and Home/End for the playhead. Every one lands here only
-        // when nothing else took it - a field being typed into consumes
-        // its own letters and spaces before a key can walk up to this
-        // scope, which is what keeps typing a title from cutting a clip.
+        // The rest of the keyboard, laid out the way every editor has
+        // taught its users: the chord key with a letter for an edit, a
+        // bare letter for a tool, the arrows and Home/End for the
+        // playhead. Every one lands here only when nothing else took it -
+        // a field being typed into consumes its own letters and spaces
+        // before a key can walk up to this scope, which is what keeps
+        // typing a title from cutting a clip.
         key-pressed(event) => {
             if (root.on-start) {
                 return reject;
@@ -526,10 +546,13 @@ export component App inherits Window {
         show-log => { root.settings-show-log(); }
         language-changed(index) => { root.settings-language-changed(index); }
         theme-changed(dark) => { root.settings-theme-changed(dark); }
+        accent-changed(index) => { root.settings-accent-changed(index); }
+        accent-custom-changed(colour) => { root.settings-accent-custom-changed(colour); }
         playhead-stops-changed(on) => { root.settings-playhead-stops-changed(on); }
         custom-context-actions-changed(on) => { root.settings-custom-context-actions-changed(on); }
         magnetic-changed(on) => { root.settings-magnetic-changed(on); }
         hardware-decode-changed(on) => { root.settings-hardware-decode-changed(on); }
+        speech-accelerated-changed(on) => { root.settings-speech-accelerated-changed(on); }
         download-source-changed(index) => { root.settings-download-source-changed(index); }
         download-base-edited(text) => { root.settings-download-base-edited(text); }
         server-enabled-changed(on) => { root.settings-server-enabled-changed(on); }
@@ -592,14 +615,24 @@ export component App inherits Window {
         height: root.height;
         data: root.speech;
         models: root.speech-models;
+        model-details: root.speech-model-details;
         voices: root.speech-voices;
         voice-details: root.speech-voice-details;
+        samples: root.speech-samples;
+        sample-waves: root.speech-sample-waves;
+        sample-details: root.speech-sample-details;
 
         closed => { root.speech-closed(); }
         text-edited(text) => { root.speech-text-edited(text); }
         voice-changed(index) => { root.speech-voice-changed(index); }
         model-changed(index) => { root.speech-model-changed(index); }
-        pace-changed(index) => { root.speech-pace-changed(index); }
+        speed-changed(value) => { root.speech-speed-changed(value); }
+        quality-changed(index) => { root.speech-quality-changed(index); }
+        pauses-changed(value) => { root.speech-pauses-changed(value); }
+        reference-start-changed(seconds) => { root.speech-reference-start-changed(seconds); }
+        use-sample-changed(on) => { root.speech-use-sample-changed(on); }
+        sample-changed(index) => { root.speech-sample-changed(index); }
+        insert-tag(text, tag, at) => { return root.speech-insert-tag(text, tag, at); }
         begin => { root.speech-begin(); }
         cancel => { root.speech-cancel(); }
     }

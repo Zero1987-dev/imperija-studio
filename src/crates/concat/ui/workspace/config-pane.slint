@@ -8,9 +8,10 @@ import { Pane, PaneBody, PaneScroll } from "pane.slint";
 import { PaneKind, PaneSwitcher } from "pane-switcher.slint";
 import { EffectData } from "../demo/effects-panel.slint";
 import {
-    AdjustPanel, AnimationPanel, AppliedEntryData, AppliedParamData, AudioPanel, ProcessorRows,
+    AdjustPanel, AppliedEntryData, AppliedParamData, AudioPanel, ProcessorRows,
     CatalogueEntryData, FilterPanel, PresetStack, SpeedPanel, VideoPanel,
 } from "../inspector/clip-inspector.slint";
+import { KeyframesPanel } from "../inspector/keyframes-panel.slint";
 import { TextPanel } from "../inspector/text-panel.slint";
 import {
     ClipField, ClipKind, ClipTextField, SelectedClipData,
@@ -185,7 +186,7 @@ export component ConfigPane inherits Rectangle {
     // The tab strip follows the selection, and stays short: three tabs at
     // most, each with a dropdown of its sections, because seven tabs on a
     // strip this narrow cannot be read. Video holds what happens to the
-    // picture - its placement, its speed, its animation, its colour; Audio
+    // picture - its placement, its speed, its colour; Audio
     // the level, the fades and the voice and room chain; Effects the two
     // shelves and the picture's chain. A still loses Audio, a sound clip
     // keeps Audio alone, and a title gets Text plus Effects — the export
@@ -200,18 +201,18 @@ export component ConfigPane inherits Rectangle {
     /// it has no transform, no gain and no rate, and every other tab could
     /// only say "nothing here".
     property <bool> is-layer: root.selected.kind == ClipKind.filter;
-    property <[string]> tabs: root.is-text ? ["Text", "Effects"]
-        : root.is-layer ? ["Filter"]
-        : root.is-image ? ["Video", "Effects"]
-        : root.is-audio ? ["Audio"]
-        : ["Video", "Audio", "Effects"];
+    property <[string]> tabs: root.is-text ? ["Text", "Effects", "Keyframes"]
+        : root.is-layer ? ["Filter", "Keyframes"]
+        : root.is-image ? ["Video", "Effects", "Keyframes"]
+        : root.is-audio ? ["Audio", "Keyframes"]
+        : ["Video", "Audio", "Effects", "Keyframes"];
     /// The same tabs in the interface's language. `tabs` stays English,
     /// because the panels are picked by comparing against it.
-    property <[string]> tabs-shown: root.is-text ? [I18n.t("Text"), I18n.t("Effects")]
-        : root.is-layer ? [I18n.t("Filter")]
-        : root.is-image ? [I18n.t("Video"), I18n.t("Effects")]
-        : root.is-audio ? [I18n.t("Audio")]
-        : [I18n.t("Video"), I18n.t("Audio"), I18n.t("Effects")];
+    property <[string]> tabs-shown: root.is-text ? [I18n.t("Text"), I18n.t("Effects"), I18n.t("Keyframes")]
+        : root.is-layer ? [I18n.t("Filter"), I18n.t("Keyframes")]
+        : root.is-image ? [I18n.t("Video"), I18n.t("Effects"), I18n.t("Keyframes")]
+        : root.is-audio ? [I18n.t("Audio"), I18n.t("Keyframes")]
+        : [I18n.t("Video"), I18n.t("Audio"), I18n.t("Effects"), I18n.t("Keyframes")];
     /// A one-segment segmented control is a label wearing a costume, so a lone
     /// tab renders as the panel's plain heading instead.
     property <bool> single: root.tabs.length < 2;
@@ -239,21 +240,23 @@ export component ConfigPane inherits Rectangle {
 
     /// The sections of the current tab, as the dropdown lists them.
     property <[string]> sections: root.heading == "Video"
-            ? (root.is-image ? ["Basic", "Animation", "Adjust"]
-                : ["Basic", "Speed", "Animation", "Adjust"])
+            ? (root.is-image ? ["Basic", "Adjust"]
+                : ["Basic", "Speed", "Adjust"])
         : root.heading == "Audio"
             ? (root.is-audio ? ["Sound", "Speed"] : ["Sound"])
         : root.heading == "Effects" ? ["Effects"]
-        : root.heading == "Text" ? ["Text", "Animation"]
+        : root.heading == "Text" ? ["Text"]
+        : root.heading == "Keyframes" ? ["Keyframes"]
         : ["Layer"];
     /// The sections as the dropdown shows them; see `tabs-shown`.
     property <[string]> sections-shown: root.heading == "Video"
-            ? (root.is-image ? [I18n.t("Basic"), I18n.t("Animation"), I18n.t("Adjust")]
-                : [I18n.t("Basic"), I18n.t("Speed"), I18n.t("Animation"), I18n.t("Adjust")])
+            ? (root.is-image ? [I18n.t("Basic"), I18n.t("Adjust")]
+                : [I18n.t("Basic"), I18n.t("Speed"), I18n.t("Adjust")])
         : root.heading == "Audio"
             ? (root.is-audio ? [I18n.t("Sound"), I18n.t("Speed")] : [I18n.t("Sound")])
         : root.heading == "Effects" ? [I18n.t("Effects")]
-        : root.heading == "Text" ? [I18n.t("Text"), I18n.t("Animation")]
+        : root.heading == "Text" ? [I18n.t("Text")]
+        : root.heading == "Keyframes" ? [I18n.t("Keyframes")]
         : [I18n.t("Layer")];
 
     // Each tab remembers its own section, so flipping to Audio and back
@@ -287,7 +290,7 @@ export component ConfigPane inherits Rectangle {
         if (root.jump-token == 0) { return; }
         if (root.jump-tab == "Video") { root.tab = 0; }
         else if (root.jump-tab == "Audio") { root.tab = root.is-audio ? 0 : 1; }
-        else if (root.jump-tab == "Effects") { root.tab = root.tabs.length - 1; }
+        else if (root.jump-tab == "Effects") { root.tab = root.is-text || root.is-image ? 1 : 2; }
         root.pick-section(0);
     }
     changed jump-token => { root.jump(); }
@@ -538,9 +541,10 @@ export component ConfigPane inherits Rectangle {
                     transition-duration-set(seconds) => { root.transition-duration-set(seconds); }
                 }
 
-                if root.showing == "Animation": AnimationPanel {
+                if root.showing == "Keyframes": KeyframesPanel {
                     selected: root.selected;
                     set(field, value) => { root.clip-set(field, value); }
+                    set-param(key, value) => { root.adjust-set(key, value); }
                     commit => { root.clip-commit(); }
                 }
 
@@ -571,7 +575,7 @@ export component ConfigPane inherits Rectangle {
                 }
 
                 // Audio: the level and fades, then the voice and room chain
-                // under them, as CapCut's audio tab has it.
+                // under them, the way an audio tab is usually laid out.
                 if root.showing == "Sound": VerticalLayout {
                     AudioPanel {
                         selected: root.selected;

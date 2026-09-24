@@ -29,9 +29,11 @@ pub(super) fn apply(
             if timeline.track(&track_id).is_none() {
                 return Err(CommandError::TrackGone);
             }
-            if ripple {
-                ripple_room_for(timeline, &track_id, start, &media);
-            }
+            let start = if ripple {
+                ripple_room_for(timeline, &track_id, start, &media)
+            } else {
+                start
+            };
             let id = mint.next("c");
             timeline
                 .clips
@@ -242,10 +244,10 @@ pub(super) fn apply(
                 }
             };
             if ripple && applied && by != 0.0 {
-                for other in timeline.clips_mut() {
-                    if other.id != clip_id && other.track_id == track_id && other.start >= behind {
-                        other.start = (other.start + by).max(0.0);
-                    }
+                for other in timeline.clips_where(|other| {
+                    other.id != clip_id && other.track_id == track_id && other.start >= behind
+                }) {
+                    other.start = (other.start + by).max(0.0);
                 }
             }
             Ok(Outcome {
@@ -299,14 +301,12 @@ pub(super) fn apply(
                 // an entrance or an exit the whole did not have at the cut.
                 tail.transition_in = None;
                 tail.fade_in = 0.0;
-                tail.animation_in = None;
                 tail.rewindow_keys(whole, offset, whole);
                 created = Some(tail.id.clone());
                 let head = timeline.clip_at_mut(index);
                 head.duration = offset;
                 head.source_start = head_source;
                 head.fade_out = 0.0;
-                head.animation_out = None;
                 head.rewindow_keys(whole, 0.0, offset);
                 timeline.clips.insert(index + 1, Arc::new(tail));
             }
@@ -453,22 +453,19 @@ pub(super) fn apply(
             tail.source_start = tail_source;
             tail.transition_in = None;
             tail.fade_in = 0.0;
-            tail.animation_in = None;
             tail.rewindow_keys(clip_duration, offset, clip_duration);
             let head = timeline.clip_at_mut(index);
             head.duration = offset;
             head.source_start = head_source;
             head.fade_out = 0.0;
-            head.animation_out = None;
             head.rewindow_keys(clip_duration, 0.0, offset);
             timeline.clips.insert(index + 1, Arc::new(tail));
 
             // Ripple every later placement on this track (including the new
             // tail) so the freeze does not sit on top of the remainder.
-            for clip in timeline.clips_mut() {
-                if clip.track_id == track_id && clip.start >= time {
-                    clip.start += hold;
-                }
+            for clip in timeline.clips_where(|clip| clip.track_id == track_id && clip.start >= time)
+            {
+                clip.start += hold;
             }
 
             // The still is the source clip turned into a picture: cloning it
@@ -538,7 +535,6 @@ pub(super) fn apply(
                 survivor.absorb_keys(piece, piece.start - first.start);
             }
             survivor.fade_out = last.fade_out;
-            survivor.animation_out = last.animation_out.clone();
             // A validated merge always absorbs at least one piece.
             Ok(Outcome {
                 created_id: Some(first.id),
@@ -593,7 +589,12 @@ const JOIN_EPSILON: f64 = 1e-6;
 /// zero.
 /// https://github.com/jub0t/Concat/issues/106
 fn close_gaps(timeline: &mut Timeline, removed: &[(String, f64, f64)]) {
-    for clip in timeline.clips_mut() {
+    let behind_a_span = |clip: &Clip| {
+        removed
+            .iter()
+            .any(|(track, start, _)| *track == clip.track_id && *start < clip.start)
+    };
+    for clip in timeline.clips_where(behind_a_span) {
         let mut spans: Vec<(f64, f64)> = removed
             .iter()
             .filter(|(track, start, _)| *track == clip.track_id && *start < clip.start)
@@ -634,27 +635,36 @@ fn default_clip(id: String, track_id: String, media: &MediaItem, start: f64) -> 
     clip
 }
 
-/// Shifts every clip on `track_id` at or after `start` right by the
-/// duration the new clip will take, when the new clip would overlap
-/// something already there. A drop with room to spare changes nothing.
-fn ripple_room_for(timeline: &mut Timeline, track_id: &str, start: f64, media: &MediaItem) {
+/// Makes room on `track_id` for a new clip at `start`: a drop onto the
+/// middle of a clip lands at that clip's end instead, and every clip at
+/// or after the place it lands moves right by the new clip's length, so
+/// the new clip slots in and nothing is covered (#129). Returns where the
+/// new clip lands. A drop with room to spare changes nothing.
+fn ripple_room_for(timeline: &mut Timeline, track_id: &str, start: f64, media: &MediaItem) -> f64 {
     let duration = match media.kind {
         MediaKind::Image => DEFAULT_IMAGE_DURATION,
         _ => media.duration.unwrap_or(UNKNOWN_DURATION),
     };
+    // Dropped onto a clip: after it, rather than over it or through it.
+    let start = timeline
+        .clips
+        .iter()
+        .filter(|clip| {
+            clip.track_id == track_id && clip.start < start && start < clip.start + clip.duration
+        })
+        .map(|clip| clip.start + clip.duration)
+        .fold(start, f64::max);
     let end = start + duration;
     let overlaps = timeline.clips.iter().any(|clip| {
         clip.track_id == track_id && clip.start < end && start < clip.start + clip.duration
     });
     if !overlaps {
-        return;
+        return start;
     }
-    for clip in timeline
-        .clips_mut()
-        .filter(|clip| clip.track_id == track_id && clip.start >= start)
-    {
+    for clip in timeline.clips_where(|clip| clip.track_id == track_id && clip.start >= start) {
         clip.start += duration;
     }
+    start
 }
 
 /// The lowest track with nothing occupying `[start, start + duration)`,

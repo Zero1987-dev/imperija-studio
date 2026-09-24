@@ -137,6 +137,27 @@ pub fn run() -> Result<(), slint::PlatformError> {
     studio.watch_packages();
     let dark = studio.prefs.dark.unwrap_or(true);
     app.global::<Theme>().set_dark(dark);
+    // The accent is remembered by name and the names live on the Theme
+    // global, so the index is looked up there rather than kept in Rust too.
+    // A remembered hex is a colour picked by hand, which is the slot past
+    // the names.
+    {
+        let theme = app.global::<Theme>();
+        let names = theme.get_accent_names();
+        let count = slint::Model::row_count(&names);
+        match studio.prefs.custom_accent().and_then(format::parse_colour) {
+            Some(colour) => {
+                theme.set_accent_custom(colour);
+                theme.set_accent_choice(count as i32);
+            }
+            None => {
+                let index = studio
+                    .prefs
+                    .accent_index(slint::Model::iter(&names).map(|name| name.to_string()));
+                theme.set_accent_choice(index as i32);
+            }
+        }
+    }
 
     let shell = Rc::new(Shell {
         app: app.as_weak(),
@@ -173,13 +194,20 @@ pub fn run() -> Result<(), slint::PlatformError> {
         editor.set_adjust_params(ModelRc::from(models.adjust_params.clone()));
         app.global::<Keyframes>()
             .set_rows(ModelRc::from(models.key_rows.clone()));
+        app.global::<KeyEditor>()
+            .set_rows(ModelRc::from(models.key_editor_rows.clone()));
+        editor.set_key_marks(ModelRc::from(models.key_marks.clone()));
         app.global::<Library>()
             .set_views(ModelRc::from(models.library_views.clone()));
         editor.set_menu_items(ModelRc::from(models.menu.clone()));
         app.set_caption_models(ModelRc::from(models.caption_models.clone()));
         app.set_speech_models(ModelRc::from(models.speech_models.clone()));
+        app.set_speech_model_details(ModelRc::from(models.speech_model_details.clone()));
         app.set_speech_voices(ModelRc::from(models.speakers.clone()));
         app.set_speech_voice_details(ModelRc::from(models.speaker_details.clone()));
+        app.set_speech_samples(ModelRc::from(models.speech_samples.clone()));
+        app.set_speech_sample_waves(ModelRc::from(models.speech_sample_waves.clone()));
+        app.set_speech_sample_details(ModelRc::from(models.speech_sample_details.clone()));
         app.set_app_menu_items(ModelRc::from(models.bar.clone()));
         app.set_transcribers(ModelRc::from(models.transcribers.clone()));
         app.set_voices(ModelRc::from(models.voices.clone()));
@@ -703,6 +731,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
 
     // ── the view ──
+    editor.on_key_mark_moved(on_lanes!(|state, from: f32, to: f32| {
+        state.move_keys_at(from, to);
+    }));
     editor.on_scrubbed(on_lanes!(|state, seconds: f32| {
         state.seek(seconds.max(0.0));
     }));
@@ -769,6 +800,12 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
     editor.on_band_selected(on_lanes!(
         |state, from: f32, to: f32, from_y: f32, to_y: f32, additive: bool| {
+            // As on a clip press and on the stage: what the inspector still
+            // holds for the selection lands before the selection moves. A
+            // press on the lanes' floor is the commonest way out of a
+            // title's text box, and it ends here, with the band it drew -
+            // usually an empty one that clears the selection.
+            state.flush_commit();
             let (from_row, to_row) = (state.row_at(from_y), state.row_at(to_y));
             let caught: Vec<String> = state
                 .timeline()
@@ -820,6 +857,36 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }));
         keys.on_clear_param(on_lanes!(|state, key: SharedString| {
             state.clear_adjust_keys(key.as_str());
+        }));
+    }
+    // The Keyframes panel's verbs; its rows go out with every publish.
+    {
+        let editor = app.global::<KeyEditor>();
+        editor.on_jump(on_lanes!(|state, at: f32| {
+            state.jump_to_key(at);
+        }));
+        editor.on_move_key(on_lanes!(|state,
+                                      field: ClipField,
+                                      param: SharedString,
+                                      from: f32,
+                                      to: f32| {
+            state.move_key(field, param.as_str(), from, to);
+        }));
+        editor.on_set_ease(on_lanes!(|state,
+                                      field: ClipField,
+                                      param: SharedString,
+                                      at: f32,
+                                      x1: f32,
+                                      y1: f32,
+                                      x2: f32,
+                                      y2: f32| {
+            state.set_key_ease(field, param.as_str(), at, [x1, y1, x2, y2]);
+        }));
+        editor.on_step_all(on_lanes!(|state, delta: i32| {
+            state.step_any_key(delta);
+        }));
+        editor.on_clear_all(on_lanes!(|state| {
+            state.clear_all_keys();
         }));
     }
 
@@ -952,6 +1019,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
     // ── the context menu ──
     editor.on_clip_context(on_window!(|state, id: SharedString| {
         state.menu_token += 1;
+        state.menu_media = None;
         if state.clip(id.as_str()).is_none() {
             state.menu_target = None;
             return;
@@ -961,7 +1029,21 @@ pub fn run() -> Result<(), slint::PlatformError> {
         }
         state.menu_target = Some(id.to_string());
     }));
+    // The bin's cards share the menu's rows and token with the clips; which
+    // one was asked for is what the two targets below remember.
+    editor.on_media_context(on_window!(|state, row: i32| {
+        state.menu_token += 1;
+        state.menu_target = None;
+        state.menu_media = state
+            .media
+            .by_row(state.project(), row)
+            .map(|item| item.id.clone());
+    }));
     editor.on_menu_selected(on_window!(|state, action: SharedString| {
+        if let Some(id) = state.menu_media.clone() {
+            state.media_action(&id, action.as_str());
+            return;
+        }
         // The clip the menu was opened on; failing that, the one clip that
         // is selected, which is what the menu was showing anyway.
         let target = state.menu_target.clone().or_else(|| state.sole_selection());
@@ -1039,6 +1121,42 @@ pub fn run() -> Result<(), slint::PlatformError> {
             });
         }
     });
+    // The accent is the same shape of thing: one int on the Theme global,
+    // remembered under the name the global lists it by.
+    app.on_settings_accent_changed({
+        move |index| {
+            Shell::with(|shell, app| {
+                let theme = app.global::<Theme>();
+                let names = theme.get_accent_names();
+                let Some(name) = usize::try_from(index)
+                    .ok()
+                    .and_then(|row| slint::Model::row_data(&names, row))
+                else {
+                    return;
+                };
+                theme.set_accent_choice(index);
+                let mut studio = shell.studio.borrow_mut();
+                studio.prefs.accent = Some(prefs::Preferences::accent_id(&name));
+                studio.prefs.save(&studio.host.dirs);
+            });
+        }
+    });
+    // A picked colour is remembered as its hex, which is what tells it from
+    // a name when the file is read back. Every drag on the picker's square
+    // lands here, so the file is written often for a moment; it is small.
+    app.on_settings_accent_custom_changed({
+        move |colour| {
+            Shell::with(|shell, app| {
+                let theme = app.global::<Theme>();
+                let count = slint::Model::row_count(&theme.get_accent_names());
+                theme.set_accent_custom(colour);
+                theme.set_accent_choice(count as i32);
+                let mut studio = shell.studio.borrow_mut();
+                studio.prefs.accent = Some(format::hex_of(colour));
+                studio.prefs.save(&studio.host.dirs);
+            });
+        }
+    });
     app.on_export_closed(on_window!(|state| {
         state.handle(Msg::Export(ExportMsg::Close));
     }));
@@ -1112,6 +1230,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
     app.on_settings_hardware_decode_changed(on_window!(|state, on: bool| {
         state.handle(Msg::Settings(SettingsMsg::HardwareDecodeChanged(on)));
+    }));
+    app.on_settings_speech_accelerated_changed(on_window!(|state, on: bool| {
+        state.handle(Msg::Settings(SettingsMsg::SpeechAcceleratedChanged(on)));
     }));
     app.on_settings_download_source_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Settings(SettingsMsg::DownloadSourceChanged(index)));
@@ -1194,9 +1315,29 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_speech_model_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Speech(SpeechMsg::ModelChanged(index)));
     }));
-    app.on_speech_pace_changed(on_window!(|state, index: i32| {
-        state.handle(Msg::Speech(SpeechMsg::PaceChanged(index)));
+    app.on_speech_speed_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Speech(SpeechMsg::SpeedChanged(value)));
     }));
+    app.on_speech_quality_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Speech(SpeechMsg::QualityChanged(index)));
+    }));
+    app.on_speech_pauses_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Speech(SpeechMsg::PausesChanged(value)));
+    }));
+    app.on_speech_reference_start_changed(on_window!(|state, seconds: f32| {
+        state.handle(Msg::Speech(SpeechMsg::ReferenceStartChanged(seconds)));
+    }));
+    app.on_speech_use_sample_changed(on_window!(|state, on: bool| {
+        state.handle(Msg::Speech(SpeechMsg::UseSampleChanged(on)));
+    }));
+    app.on_speech_sample_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Speech(SpeechMsg::SampleChanged(index)));
+    }));
+    // A string cut, and nothing of the window's: the sheet keeps the text,
+    // Rust only knows where a character starts.
+    app.on_speech_insert_tag(|text: SharedString, tag: SharedString, at: i32| {
+        panes::speech::insert_tag(text.as_str(), tag.as_str(), at.max(0) as usize).into()
+    });
     app.on_speech_begin(on_window!(|state| {
         state.handle(Msg::Speech(SpeechMsg::Begin));
     }));

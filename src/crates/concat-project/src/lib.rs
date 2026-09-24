@@ -21,7 +21,6 @@
 //! document model needs serde, and concat-core's zero-dependency rule is worth
 //! more than the adjacency.
 
-pub mod animation;
 pub mod commands;
 pub mod doc;
 pub mod editor;
@@ -1262,6 +1261,71 @@ mod tests {
         );
     }
 
+    /// A ripple delete moves the clips behind the gap and copies those
+    /// alone: the clip in front is still the snapshot's.
+    #[test]
+    fn a_ripple_copies_only_the_clips_it_moves() {
+        let (mut editor, _, clip_id) = fixture();
+        editor
+            .apply(Command::SplitClips {
+                clip_ids: vec![clip_id.clone()],
+                time: 4.0,
+            })
+            .expect("splits");
+        editor
+            .apply(Command::SplitClips {
+                clip_ids: vec![editor.project().active().clips[1].id.clone()],
+                time: 7.0,
+            })
+            .expect("splits again");
+        let head = std::sync::Arc::clone(&editor.project().active().clips[0]);
+        let middle = editor.project().active().clips[1].id.clone();
+        let last = std::sync::Arc::clone(&editor.project().active().clips[2]);
+        editor
+            .apply(Command::RemoveClips {
+                clip_ids: vec![middle],
+                ripple: true,
+            })
+            .expect("ripple deletes");
+        let clips = &editor.project().active().clips;
+        assert_eq!(clips.len(), 2);
+        assert!(
+            std::sync::Arc::ptr_eq(&head, &clips[0]),
+            "the clip in front of the gap is still shared with the snapshot"
+        );
+        assert!(
+            !std::sync::Arc::ptr_eq(&last, &clips[1]),
+            "the moved clip was copied"
+        );
+        assert_eq!(clips[1].start, 4.0);
+    }
+
+    /// Every command's result goes through `Clip::tidy`: a key set past the
+    /// field's range comes out clamped, the way the field itself would.
+    #[test]
+    fn a_command_leaves_a_tidy_clip_behind() {
+        let (mut editor, _, clip_id) = fixture();
+        editor
+            .apply(Command::SetClipKey {
+                clip_id: clip_id.clone(),
+                property: crate::model::KeyProperty::OffsetX,
+                at: 0.5,
+                value: 99.0,
+                ease: Default::default(),
+            })
+            .expect("sets a key");
+        let clip = &editor.project().active().clips[0];
+        let key = clip
+            .keys_on(crate::model::KeyProperty::OffsetX)
+            .next()
+            .expect("the key");
+        assert_eq!(
+            key.value,
+            crate::model::ranges::MAX_OFFSET,
+            "clamped like the field"
+        );
+    }
+
     #[test]
     fn a_command_copies_only_what_it_writes() {
         let (mut editor, _, clip_id) = fixture();
@@ -1385,7 +1449,6 @@ mod tests {
                 { "id": "c1", "trackId": "T1", "mediaId": "m1", "kind": "video",
                   "cutout": { "mode": "unknown" }, "keys": "garbage",
                   "transitionIn": { "id": "cross-fade" },
-                  "animationIn": { "preset": "  " },
                   "videoEffects": [{ "id": "sepia", "keys": { "amount": [ { "at": 0.5, "value": 1.0 }, { "at": 7.0, "value": 2.0 } ] } }, "not an effect"] },
                 { "id": "c2", "trackId": "T1", "mediaId": "m2", "kind": "audio", "start": "soon" }
             ]
@@ -1421,7 +1484,6 @@ mod tests {
         );
         assert!(clip.keys.is_empty());
         assert_eq!(clip.transition_in.as_ref().expect("kept").duration, 1.0);
-        assert!(clip.animation_in.is_none(), "a preset with no name is none");
         assert_eq!(clip.video_effects.len(), 1);
         assert_eq!(
             clip.video_effects[0].keys["amount"].len(),
@@ -1572,21 +1634,8 @@ mod tests {
     }
 
     #[test]
-    fn a_split_leaves_the_entrance_with_the_head_and_the_exit_with_the_tail() {
-        use crate::model::{AnimationSlot, ClipAnimation};
+    fn a_split_leaves_the_fade_in_with_the_head_and_the_fade_out_with_the_tail() {
         let (mut editor, _, clip_id) = fixture();
-        for (slot, preset) in [(AnimationSlot::In, "Fade"), (AnimationSlot::Out, "Fade")] {
-            editor
-                .apply(Command::SetClipAnimation {
-                    clip_id: clip_id.clone(),
-                    slot,
-                    animation: Some(ClipAnimation {
-                        preset: preset.to_owned(),
-                        duration: 0.5,
-                    }),
-                })
-                .expect("animates");
-        }
         editor
             .apply(Command::UpdateClip {
                 clip_id: clip_id.clone(),
@@ -1605,8 +1654,6 @@ mod tests {
             .expect("splits");
         let timeline = editor.project().active();
         let (head, tail) = (&timeline.clips[0], &timeline.clips[1]);
-        assert!(head.animation_in.is_some() && head.animation_out.is_none());
-        assert!(tail.animation_in.is_none() && tail.animation_out.is_some());
         assert_eq!((head.fade_in, head.fade_out), (0.5, 0.0));
         assert_eq!((tail.fade_in, tail.fade_out), (0.0, 0.5));
 
@@ -1615,7 +1662,6 @@ mod tests {
             .apply(Command::MergeClips { clip_ids: ids })
             .expect("merges");
         let clip = &editor.project().active().clips[0];
-        assert!(clip.animation_in.is_some() && clip.animation_out.is_some());
         assert_eq!((clip.fade_in, clip.fade_out), (0.5, 0.5));
     }
 
