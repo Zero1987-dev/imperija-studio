@@ -427,9 +427,9 @@ jobs:
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-            <key>CFBundleName</key><string>Concat</string>
-            <key>CFBundleDisplayName</key><string>Concat</string>
-            <key>CFBundleIdentifier</key><string>app.concat.editor</string>
+            <key>CFBundleName</key><string>Imperija Studio</string>
+            <key>CFBundleDisplayName</key><string>Imperija Studio</string>
+            <key>CFBundleIdentifier</key><string>com.tiktokimperija.imperijastudio</string>
             <key>CFBundleVersion</key><string>${VERSION}</string>
             <key>CFBundleShortVersionString</key><string>${VERSION}</string>
             <key>CFBundleExecutable</key><string>concat</string>
@@ -526,8 +526,8 @@ jobs:
           cat > "stage/$name/concat.desktop" <<DESKTOP
           [Desktop Entry]
           Type=Application
-          Name=Concat
-          Comment=Video editor
+          Name=Imperija Studio
+          Comment=Editor videa za TikTok
           Exec=concat
           Icon=concat
           Categories=AudioVideo;Video;

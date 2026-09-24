@@ -32,23 +32,23 @@
 [Setup]
 ; One id for the life of the product, so an install over an older one is
 ; an upgrade and not a second copy.
-AppId={{7B1E5C3A-3B9E-4F0B-9C6D-2F1D0C0A0C47}
-AppName=Concat
+AppId={{055B36D1-CB59-4F78-9E4E-B903E61DD6DD}
+AppName=Imperija Studio
 AppVersion={#Version}
-AppVerName=Concat {#Version}
-AppPublisher=Concat contributors
-AppPublisherURL=https://github.com/jub0t/Concat
-AppSupportURL=https://github.com/jub0t/Concat/issues
-AppUpdatesURL=https://github.com/jub0t/Concat/releases
-DefaultDirName={autopf}\Concat
-DefaultGroupName=Concat
+AppVerName=Imperija Studio {#Version}
+AppPublisher=TikTok Imperija
+AppPublisherURL=https://tiktokimperija.com
+AppSupportURL=https://github.com/Zero1987-dev/imperija-studio/issues
+AppUpdatesURL=https://github.com/Zero1987-dev/imperija-studio/releases
+DefaultDirName={autopf}\Imperija Studio
+DefaultGroupName=Imperija Studio
 DisableProgramGroupPage=yes
 LicenseFile=..\..\LICENSE
 OutputDir={#Out}
-OutputBaseFilename=Concat-{#Version}-windows-{#Suffix}-setup
+OutputBaseFilename=Imperija-Studio-{#Version}-windows-{#Suffix}-setup
 SetupIconFile=..\icons\concat.ico
 UninstallDisplayIcon={app}\concat.ico
-UninstallDisplayName=Concat
+UninstallDisplayName=Imperija Studio
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
