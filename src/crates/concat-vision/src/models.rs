@@ -37,6 +37,10 @@ pub enum ModelId {
     /// Real-ESRGAN's compact general model: a picture four times its size
     /// with its noise and compression gone, what Enhance is made of.
     Enhance,
+    /// YuNet: where the faces are in a picture. A quarter of a megabyte and
+    /// fast enough on a processor alone, which is what reframing needs -
+    /// it reads a whole clip through before the first frame is shown.
+    Face,
 }
 
 /// One model as the table describes it.
@@ -60,7 +64,7 @@ pub struct ModelSpec {
 }
 
 /// Every downloadable model.
-pub const MODELS: [ModelSpec; 5] = [
+pub const MODELS: [ModelSpec; 6] = [
     ModelSpec {
         id: ModelId::Person,
         file: "rvm-mobilenetv3.onnx",
@@ -101,6 +105,17 @@ pub const MODELS: [ModelSpec; 5] = [
         sha256: "1940a93ee08283a0a7286183186357b1688fe9fa8ede74604b424586aaddf112",
         licence: "BSD-3-Clause",
     },
+    ModelSpec {
+        id: ModelId::Face,
+        file: "face-detection-yunet-2023mar.onnx",
+        // Pinned to the commit, since a branch moves. The file is held in
+        // Git LFS, and this is the address that resolves it to its bytes
+        // rather than to its pointer.
+        upstream: "https://github.com/opencv/opencv_zoo/raw/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+        bytes: 232_589,
+        sha256: "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+        licence: "MIT",
+    },
 ];
 
 impl ModelId {
@@ -120,6 +135,7 @@ impl ModelId {
             ModelId::BrushEncoder => "slimsam-77-encoder",
             ModelId::BrushDecoder => "slimsam-77-decoder",
             ModelId::Enhance => "realesr-general-x4v3",
+            ModelId::Face => "yunet-2023mar",
         }
     }
 }
