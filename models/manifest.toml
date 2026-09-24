@@ -84,6 +84,19 @@ sha256 = "1940a93ee08283a0a7286183186357b1688fe9fa8ede74604b424586aaddf112"
 licence = "BSD-3-Clause"
 upstream = "https://huggingface.co/CoderViking/realesr-general-x4v3-onnx/resolve/c6a971706797c7502945a2b4c4274fce4900d4ab/realesr-general-x4v3.onnx"
 
+# Where the faces are, for following a speaker when a wide shot is cut to a
+# tall one. YuNet from the OpenCV model zoo, a quarter of a megabyte. The
+# file is held in Git LFS, so the address is the one that resolves to its
+# bytes rather than to the pointer; pinned to a commit, since a branch moves.
+[[model]]
+id = "face-detection-yunet"
+family = "cutout"
+file = "face-detection-yunet-2023mar.onnx"
+bytes = 232589
+sha256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+licence = "MIT"
+upstream = "https://github.com/opencv/opencv_zoo/raw/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+
 # ── Text to speech ───────────────────────────────────────────────────────
 # src/crates/concat-speech/src/tts.rs. Kokoro v1.0 multi-language, the
 # official sherpa-onnx conversions; the two differ only in quantisation.
