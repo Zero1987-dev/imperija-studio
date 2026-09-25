@@ -174,12 +174,13 @@ pub fn unescape(value: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&value[i + 1..i + 3], 16) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(byte) = u8::from_str_radix(&value[i + 1..i + 3], 16)
+        {
+            out.push(byte);
+            i += 3;
+            continue;
         }
         out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
         i += 1;
@@ -481,17 +482,29 @@ fn write_private(path: &Path, text: &str) -> Result<(), String> {
 /// accepted: that is the check that the answer is the one this call asked
 /// for and not another page's.
 fn wait_for_code(listener: &TcpListener, state: &str) -> Result<String, String> {
-    for stream in listener.incoming() {
+    // A browser asks for more than the page: a favicon, sometimes a probe
+    // the moment the tab opens. Taking the first connection as the answer
+    // would take one of those instead, so anything without a code is
+    // answered and ignored, and only a refusal or the code itself ends
+    // this. Bounded, so a browser that never sends it cannot wait forever.
+    for _ in 0..20 {
+        let Some(stream) = listener.incoming().next() else {
+            break;
+        };
         let mut stream = stream.map_err(|error| format!("the browser did not arrive: {error}"))?;
         let mut line = String::new();
         BufReader::new(&stream)
             .read_line(&mut line)
             .map_err(|error| format!("could not read the answer: {error}"))?;
+
         let found = code_from(&line).filter(|(_, sent)| sent == state);
+        let refused = line.contains("error=");
         let body = if found.is_some() {
             "<h2>Spojeno.</h2><p>Možeš zatvoriti ovu karticu i vratiti se u Imperija Studio.</p>"
-        } else {
+        } else if refused {
             "<h2>Nije spojeno.</h2><p>Vrati se u Imperija Studio i pokušaj ponovo.</p>"
+        } else {
+            "<h2>Čekam…</h2>"
         };
         let _ = write!(
             stream,
@@ -500,10 +513,13 @@ fn wait_for_code(listener: &TcpListener, state: &str) -> Result<String, String> 
             body.len()
         );
         let _ = stream.flush();
+
         if let Some((code, _)) = found {
             return Ok(code);
         }
-        return Err("access was not granted".to_owned());
+        if refused {
+            return Err("access was not granted".to_owned());
+        }
     }
     Err("the browser never came back".to_owned())
 }
