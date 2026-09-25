@@ -572,14 +572,17 @@ mod tests {
         // Backwards or empty ranges must not reach the tool: it would take
         // them literally and answer with nothing.
         for section in [None, Some((10.0, 10.0)), Some((20.0, 5.0))] {
-            let request = FetchRequest { section, ..FetchRequest::default() };
-            let asked = match request.section {
-                Some((from, to)) if to > from => true,
-                _ => false,
+            let request = FetchRequest {
+                section,
+                ..FetchRequest::default()
             };
+            let asked = matches!(request.section, Some((from, to)) if to > from);
             assert!(!asked, "{section:?} should not be asked for");
         }
-        let request = FetchRequest { section: Some((5.0, 20.0)), ..FetchRequest::default() };
+        let request = FetchRequest {
+            section: Some((5.0, 20.0)),
+            ..FetchRequest::default()
+        };
         assert!(matches!(request.section, Some((from, to)) if to > from));
     }
 
