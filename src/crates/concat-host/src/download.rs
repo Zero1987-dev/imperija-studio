@@ -699,9 +699,8 @@ mod tests {
     fn a_runtime_is_looked_for_on_the_path_and_missing_is_allowed() {
         // Whatever this machine has, the answer is one of the four or none,
         // and asking must not panic on a machine with no PATH at all.
-        match js_runtime() {
-            Some(name) => assert!(JS_RUNTIMES.contains(&name), "{name}"),
-            None => {}
+        if let Some(name) = js_runtime() {
+            assert!(JS_RUNTIMES.contains(&name), "{name}");
         }
         assert!(which("a-program-nobody-has-installed-3f9c").is_none());
     }
