@@ -4928,6 +4928,16 @@ impl Studio {
         self.downloader.folder = folder.to_owned();
     }
 
+    /// One end of the stretch was typed into.
+    pub fn downloader_edge(&mut self, which: &str, text: &str) {
+        match which {
+            "from" => self.downloader.from = text.to_owned(),
+            "to" => self.downloader.to = text.to_owned(),
+            _ => {}
+        }
+        self.downloader.message.clear();
+    }
+
     /// Asks the system for a folder and takes the answer.
     pub fn downloader_browse(&mut self) {
         // Empty start: the picker then opens wherever the system last left
@@ -4981,7 +4991,12 @@ impl Studio {
             wanted: self.downloader.wanted(),
             max_height: self.downloader.height(),
             max_fps: self.downloader.rate(),
+            section: self.downloader.section(),
         };
+        if self.downloader.stretch_is_wrong() {
+            self.downloader.message = t("That stretch does not read as a time; try 6:52");
+            return;
+        }
         self.downloader.message.clear();
         self.downloader.running = true;
         // The tool is fetched before anything else, so the first report a
@@ -7536,6 +7551,9 @@ impl Studio {
             message: self.downloader.message.as_str().into(),
             to_folder: self.downloader.to_folder,
             folder: self.downloader.folder.as_str().into(),
+            from: self.downloader.from.as_str().into(),
+            to: self.downloader.to.as_str().into(),
+            can_cut: self.host.downloads.can_cut(),
         });
         let voices = installed(&self.settings.voices);
         sync(
@@ -8373,6 +8391,10 @@ pub struct DownloaderSheet {
     pub to_folder: bool,
     /// That folder, when one has been chosen.
     pub folder: String,
+    /// The stretch to take, as typed. Empty for all of it.
+    pub from: String,
+    /// The end of that stretch.
+    pub to: String,
 }
 
 impl DownloaderSheet {
@@ -8394,6 +8416,28 @@ impl DownloaderSheet {
             2 => 60,
             _ => 0,
         }
+    }
+
+    /// The stretch to take, in seconds, or None for all of it.
+    ///
+    /// Both ends have to read as times and the end has to come after the
+    /// start; anything else is treated as "no stretch given" rather than
+    /// guessed at, and [`Self::stretch_is_wrong`] is what says so.
+    pub fn section(&self) -> Option<(f64, f64)> {
+        use concat_host::download::seconds_of;
+        match (seconds_of(&self.from), seconds_of(&self.to)) {
+            (Some(from), Some(to)) if to > from => Some((from, to)),
+            _ => None,
+        }
+    }
+
+    /// Something was typed into the stretch that is not a stretch.
+    ///
+    /// Silence would be worse than a message: a mistyped end means the
+    /// whole hour comes down, and nothing on screen would have said why.
+    pub fn stretch_is_wrong(&self) -> bool {
+        let typed = !self.from.trim().is_empty() || !self.to.trim().is_empty();
+        typed && self.section().is_none()
     }
 
     /// What is being taken from the page.

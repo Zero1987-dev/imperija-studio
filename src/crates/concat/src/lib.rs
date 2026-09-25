@@ -1336,6 +1336,12 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_downloader_browse(on_window!(|state| {
         state.downloader_browse();
     }));
+    app.on_downloader_from_edited(on_window!(|state, text: SharedString| {
+        state.downloader_edge("from", text.as_str());
+    }));
+    app.on_downloader_to_edited(on_window!(|state, text: SharedString| {
+        state.downloader_edge("to", text.as_str());
+    }));
     app.on_speech_closed(on_window!(|state| {
         state.handle(Msg::Speech(SpeechMsg::Close));
     }));

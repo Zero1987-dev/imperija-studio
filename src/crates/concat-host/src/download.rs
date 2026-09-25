@@ -128,6 +128,10 @@ pub struct FetchRequest {
     /// that only has 60 still answers with it when 30 is asked for and
     /// nothing else exists - see [`format_for`].
     pub max_fps: u32,
+    /// Take only this stretch, in seconds from the start. None for all of
+    /// it. An hour-long episode wanted for seventy seconds should not be
+    /// an hour's download - see [`Downloads::can_cut`].
+    pub section: Option<(f64, f64)>,
 }
 
 impl Default for FetchRequest {
@@ -139,8 +143,39 @@ impl Default for FetchRequest {
             wanted: Wanted::Video,
             max_height: 0,
             max_fps: 0,
+            section: None,
         }
     }
+}
+
+/// A time as a person writes it - `95`, `1:35`, `1:02:03` - in seconds.
+///
+/// The same three forms podscout writes, so a stretch carries from one to
+/// the other without translating. None for anything else, the empty string
+/// a field starts as included.
+pub fn seconds_of(text: &str) -> Option<f64> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let mut seconds = 0.0;
+    let mut parts = 0;
+    for part in text.split(':') {
+        let value: f64 = part.trim().parse().ok()?;
+        // Only the first number may be sixty or more: 1:75 is a typo, 75
+        // on its own is a minute and a quarter.
+        if value < 0.0 || (parts > 0 && value >= 60.0) {
+            return None;
+        }
+        seconds = seconds * 60.0 + value;
+        parts += 1;
+    }
+    (parts <= 3).then_some(seconds)
+}
+
+/// The stretch as yt-dlp writes one: `*from-to`, in seconds.
+pub fn section_of(from: f64, to: f64) -> String {
+    format!("*{from}-{to}")
 }
 
 /// What a picture has to be encoded in to be worth editing.
@@ -276,6 +311,13 @@ impl Downloads {
         which("ffmpeg").is_some()
     }
 
+    /// Whether a stretch can be taken. The cutting is ffmpeg's, the same
+    /// one MP3 needs; without it the whole file would come down instead,
+    /// which is a surprise worth refusing rather than delivering.
+    pub fn can_cut(&self) -> bool {
+        which("ffmpeg").is_some()
+    }
+
     /// Runs the tool's own updater, which checks the new version itself.
     ///
     /// The pin in [`TOOL_VERSION`] is what a first install is checked
@@ -347,6 +389,15 @@ impl Downloads {
                 ],
             })
             .args(["-o", &template])
+            // Only the stretch asked for. The tool fetches the bytes that
+            // cover it and cuts them with ffmpeg, so an hour-long episode
+            // wanted for seventy seconds costs seventy seconds.
+            .args(match request.section {
+                Some((from, to)) if to > from => {
+                    vec!["--download-sections".to_owned(), section_of(from, to)]
+                }
+                _ => Vec::new(),
+            })
             // `--print` alone would only pretend to download; with this it
             // downloads and then says where the file went, which beats
             // guessing the name back out of the template.
@@ -489,6 +540,48 @@ pub fn percent_of(line: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_time_reads_in_all_three_forms_a_person_writes() {
+        assert_eq!(seconds_of("95"), Some(95.0));
+        assert_eq!(seconds_of("1:35"), Some(95.0));
+        assert_eq!(seconds_of("1:02:03"), Some(3723.0));
+        // podscout's own example, straight out of the contract.
+        assert_eq!(seconds_of("6:52"), Some(412.0));
+        assert_eq!(seconds_of(" 5:44 "), Some(344.0));
+        assert_eq!(seconds_of("0"), Some(0.0));
+        assert_eq!(seconds_of("12.5"), Some(12.5));
+    }
+
+    #[test]
+    fn anything_that_is_not_a_time_is_refused_rather_than_guessed() {
+        for text in ["", "   ", "abc", "1:2:3:4", "1:75", "-5", "1:-2", "1::2"] {
+            assert_eq!(seconds_of(text), None, "{text:?}");
+        }
+        // Sixty and over is fine as the only number: 75 seconds is a time.
+        assert_eq!(seconds_of("75"), Some(75.0));
+    }
+
+    #[test]
+    fn a_stretch_is_written_the_way_the_tool_reads_it() {
+        assert_eq!(section_of(344.0, 418.0), "*344-418");
+    }
+
+    #[test]
+    fn a_stretch_is_only_asked_for_when_it_is_a_stretch() {
+        // Backwards or empty ranges must not reach the tool: it would take
+        // them literally and answer with nothing.
+        for section in [None, Some((10.0, 10.0)), Some((20.0, 5.0))] {
+            let request = FetchRequest { section, ..FetchRequest::default() };
+            let asked = match request.section {
+                Some((from, to)) if to > from => true,
+                _ => false,
+            };
+            assert!(!asked, "{section:?} should not be asked for");
+        }
+        let request = FetchRequest { section: Some((5.0, 20.0)), ..FetchRequest::default() };
+        assert!(matches!(request.section, Some((from, to)) if to > from));
+    }
 
     #[test]
     fn a_progress_line_reads_as_a_fraction() {

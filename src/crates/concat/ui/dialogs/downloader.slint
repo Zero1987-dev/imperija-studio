@@ -36,6 +36,11 @@ export struct DownloaderSheetData {
     to-folder: bool,
     /// That folder, when they have chosen one.
     folder: string,
+    /// The stretch to take, as typed. Empty for all of it.
+    from: string,
+    to: string,
+    /// ffmpeg is here, so a stretch can be cut.
+    can-cut: bool,
     running: bool,
     /// The tool itself is still coming down, not the video.
     fetching-tool: bool,
@@ -52,6 +57,8 @@ export component DownloaderDialog inherits Modal {
     callback quality-changed(index: int);
     callback fps-changed(index: int);
     callback wanted-changed(index: int);
+    callback from-changed(text: string);
+    callback to-changed(text: string);
     callback to-folder-changed(on: bool);
     callback folder-changed(text: string);
     /// Opens the system's folder picker.
@@ -143,6 +150,42 @@ export component DownloaderDialog inherits Modal {
             Text {
                 text: I18n.t("A ceiling, not a demand: a video that has nothing that small comes down at what it has.");
                 color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+        }
+
+        // Only part of it. An hour of podcast for seventy seconds of clip
+        // is an hour's download and a gigabyte on the disk for nothing;
+        // with these it is seventy seconds of both.
+        DialogSection {
+            title: I18n.t("Part of it");
+
+            DialogRow {
+                label: I18n.t("From");
+                Field {
+                    value: root.data.from;
+                    technical: true;
+                    placeholder: I18n.t("start");
+                    edited(text) => { root.from-changed(text); }
+                }
+            }
+
+            DialogRow {
+                label: I18n.t("To");
+                Field {
+                    value: root.data.to;
+                    technical: true;
+                    placeholder: I18n.t("end");
+                    edited(text) => { root.to-changed(text); }
+                }
+            }
+
+            Text {
+                text: root.data.can-cut
+                    ? I18n.t("Leave both empty for the whole thing. Minutes and seconds, like 6:52, or hours too, like 1:02:03.")
+                    : I18n.t("Taking part of a video needs ffmpeg on this machine; without it the whole thing comes down.");
+                color: root.data.can-cut ? Theme.fg-muted : Theme.danger;
                 font-size: Theme.fs-sm;
                 wrap: word-wrap;
             }
