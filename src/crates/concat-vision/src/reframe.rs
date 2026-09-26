@@ -44,9 +44,9 @@ pub struct Face {
     /// people in one shot be compared at all.
     ///
     /// It grows as the jaw opens. On its own a single reading says very
-    /// little - a face turned aside reads much the same as a face mid-word
-    /// - but *how much it varies* over a second or two separates a mouth
-    /// that is working from one that is not. See [`bind`], which is the
+    /// little, since a face turned aside reads much the same as a face
+    /// mid-word; but *how much it varies* over a second or two separates a
+    /// mouth that is working from one that is not. See [`bind`], which is the
     /// only thing that uses it, and uses it over a whole clip rather than a
     /// moment.
     ///
@@ -618,15 +618,15 @@ pub fn bind(samples: &[Vec<Face>], turns: &[Turn], rate: f64) -> Vec<usize> {
         for (person, cell) in row.iter_mut().enumerate() {
             let (mut theirs, mut n_theirs) = (0.0, 0usize);
             let (mut others, mut n_others) = (0.0, 0usize);
-            for at in 0..samples.len() {
+            for (at, work) in effort[person].iter().enumerate() {
                 let Some(talking) = speaking_at(at) else {
                     continue;
                 };
                 if talking == voice {
-                    theirs += effort[person][at];
+                    theirs += work;
                     n_theirs += 1;
                 } else {
-                    others += effort[person][at];
+                    others += work;
                     n_others += 1;
                 }
             }
@@ -662,7 +662,7 @@ pub fn bind(samples: &[Vec<Face>], turns: &[Turn], rate: f64) -> Vec<usize> {
         answer[voice] = person;
         taken[person] = true;
     }
-    if answer.iter().any(|person| *person == usize::MAX) {
+    if answer.contains(&usize::MAX) {
         return Vec::new();
     }
     answer
@@ -1082,7 +1082,7 @@ mod tests {
                     .map(|turn| turn.speaker);
                 // A mouth that is working reads differently frame to frame;
                 // a mouth at rest reads the same every time.
-                let moving = 0.85 + f64::from(i % 2) * 0.15;
+                let moving = if i % 2 == 0 { 0.85 } else { 1.0 };
                 vec![
                     lips(0.25, if talking == Some(0) { moving } else { 0.85 }),
                     lips(0.75, if talking == Some(1) { moving } else { 0.85 }),
