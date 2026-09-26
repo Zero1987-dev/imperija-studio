@@ -153,7 +153,9 @@ impl Reframers {
         let mut decoder =
             Decoder::open(&request.media_path, &options).map_err(|error| error.to_string())?;
 
-        let mut seen: Vec<Option<(f64, f64)>> = Vec::with_capacity(samples);
+        // Every face, not just the one picked here: choosing the subject is
+        // the camera's own job and it needs memory of whom it was watching.
+        let mut seen: Vec<Vec<concat_vision::reframe::Face>> = Vec::with_capacity(samples);
         while seen.len() < samples {
             if job.cancelled() {
                 return Err("reframe cancelled".to_owned());
@@ -167,12 +169,12 @@ impl Reframers {
                 .lock()
                 .map_err(|_| "detector poisoned")?
                 .faces(&frame)?;
-            seen.push(reframe::pick_subject(&faces).map(|f| f.centre()));
+            seen.push(faces);
             progress(Progress::Analysing(seen.len() as f32 / samples as f32));
         }
         progress(Progress::Analysing(1.0));
 
-        if seen.iter().all(Option::is_none) {
+        if seen.iter().all(Vec::is_empty) {
             return Ok(Vec::new());
         }
 

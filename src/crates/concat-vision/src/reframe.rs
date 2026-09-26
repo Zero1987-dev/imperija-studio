@@ -117,31 +117,6 @@ pub fn shot_for(u: f64, v: f64, scale: f64, source_aspect: f64, frame_aspect: f6
     }
 }
 
-/// Which face the camera follows.
-///
-/// The largest, and among faces of a similar size the one nearest the
-/// middle. Size alone flickers between two people sitting the same distance
-/// away - the detector's boxes wobble by a percent or two from frame to
-/// frame - so anything within a tenth of the largest counts as the same
-/// size and the tie is broken by position, which does not wobble.
-pub fn pick_subject(faces: &[Face]) -> Option<Face> {
-    let largest = faces.iter().map(Face::area).fold(0.0_f64, f64::max);
-    if largest <= 0.0 {
-        return None;
-    }
-    faces
-        .iter()
-        .filter(|f| f.area() >= largest * 0.9)
-        .min_by(|a, b| {
-            let d = |f: &Face| {
-                let (u, v) = f.centre();
-                (u - 0.5).powi(2) + (v - 0.5).powi(2)
-            };
-            d(a).total_cmp(&d(b))
-        })
-        .copied()
-}
-
 /// How far the subject may drift before the camera answers, in source
 /// fractions.
 ///
@@ -156,12 +131,30 @@ pub const DEADZONE: f64 = 0.04;
 /// enough that the camera has arrived before the sentence ends.
 pub const EASING: f64 = 0.12;
 
-/// A jump this far or further is a cut between speakers, not a movement.
+/// How much larger another face has to be before it is worth leaving the
+/// one being followed.
 ///
-/// Gliding across a third of the picture takes seconds and looks like the
-/// camera lost someone. When the subject changes by this much the camera is
-/// simply there, the way a vision mixer would have cut.
-pub const CUT: f64 = 0.33;
+/// Two people sat the same distance from one camera measure within a few
+/// percent of each other, and which of them is "largest" then changes with
+/// the detector's own noise. Answering that noise is what made the picture
+/// dance between them. A third larger is a real difference - someone
+/// leaning in, or a single speaker filling the frame - not a wobble.
+pub const TAKEOVER: f64 = 1.35;
+
+/// And for how many samples in a row before the camera believes it.
+///
+/// At [`super::SAMPLE_RATE`] this is about a second: long enough that a
+/// flicker cannot move the camera, short enough that a real change of
+/// speaker is not missed.
+pub const INSIST: usize = 6;
+
+/// How far the followed face may move between samples and still be taken
+/// for the same person.
+///
+/// Past this it is not that they moved, it is that they are gone - out of
+/// frame, turned away - and the camera takes the largest face there is
+/// instead.
+pub const LOST: f64 = 0.25;
 
 /// How near the camera has to get before it stops following again.
 ///
@@ -172,44 +165,106 @@ pub const CUT: f64 = 0.33;
 /// camera go back to ignoring small ones.
 pub const ARRIVED: f64 = DEADZONE / 4.0;
 
-/// The camera's path over a clip, from where the subject was in each
-/// sampled frame.
-///
-/// The camera is either holding or following. Holding, it ignores anything
-/// inside [`DEADZONE`] and sets out for anything past it. Following, it
-/// closes [`EASING`] of the distance each sample until it is within
-/// [`ARRIVED`], and then holds again. A jump of [`CUT`] or more is not a
-/// move at all - it is the other person talking - so the camera is simply
-/// there.
-///
-/// A frame nobody was found in keeps the camera where it was: a subject who
-/// turns away or is briefly hidden should not send it back to the middle.
-pub fn follow(subjects: &[Option<(f64, f64)>]) -> Vec<(f64, f64)> {
-    let start = subjects
+/// The face nearest a point, and how far it is.
+fn nearest(faces: &[Face], to: (f64, f64)) -> Option<(Face, f64)> {
+    faces
         .iter()
-        .flatten()
-        .next()
+        .map(|face| {
+            let (u, v) = face.centre();
+            (*face, ((u - to.0).powi(2) + (v - to.1).powi(2)).sqrt())
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// The largest face in a frame.
+fn largest(faces: &[Face]) -> Option<Face> {
+    faces
+        .iter()
+        .max_by(|a, b| a.area().total_cmp(&b.area()))
         .copied()
-        .unwrap_or((0.5, 0.5));
-    let mut camera = start;
+}
+
+/// The camera's path over a clip, from every face found in each sampled
+/// frame.
+///
+/// **It follows a person, not a position.** The camera keeps hold of whom
+/// it is watching and looks for that same face again in the next frame;
+/// it only changes to somebody else when they are [`TAKEOVER`] larger for
+/// [`INSIST`] samples running. Choosing the largest face afresh each time
+/// is what made a two-person podcast dance: the two measure within a few
+/// percent of each other, so the detector's noise decided who was
+/// "largest", and every flicker became a cut.
+///
+/// Having settled on whom to watch, the camera holds still inside
+/// [`DEADZONE`] and glides [`EASING`] of the way per sample otherwise. The
+/// one time it moves at once is a change of subject - that is a vision
+/// mixer cutting to the other guest, and gliding across the frame for it
+/// would look like the camera lost them.
+///
+/// A frame nobody was found in keeps the camera where it was: a subject
+/// who turns away or is briefly hidden should not send it to the middle.
+pub fn follow(samples: &[Vec<Face>]) -> Vec<(f64, f64)> {
+    let mut watching: Option<Face> = None;
+    let mut rival = 0usize;
+    let mut camera = samples
+        .iter()
+        .flat_map(|faces| largest(faces))
+        .next()
+        .map_or((0.5, 0.5), |face| face.centre());
     let mut following = false;
-    let mut path = Vec::with_capacity(subjects.len());
-    for seen in subjects {
-        if let Some((u, v)) = *seen {
-            let (dx, dy) = (u - camera.0, v - camera.1);
-            let distance = (dx * dx + dy * dy).sqrt();
-            if distance >= CUT {
-                camera = (u, v);
-                following = false;
+    let mut path = Vec::with_capacity(samples.len());
+
+    for faces in samples {
+        if faces.is_empty() {
+            path.push(camera);
+            continue;
+        }
+        // The same person again, by where they were; or the largest when
+        // nobody is being watched or the one being watched has gone.
+        let held = watching
+            .and_then(|face| nearest(faces, face.centre()))
+            .filter(|(_, away)| *away <= LOST)
+            .map(|(face, _)| face)
+            .or_else(|| largest(faces));
+        let Some(held) = held else {
+            path.push(camera);
+            continue;
+        };
+
+        let biggest = largest(faces).unwrap_or(held);
+        let cut = if watching.is_none() {
+            watching = Some(held);
+            true
+        } else if biggest.area() > held.area() * TAKEOVER {
+            rival += 1;
+            if rival >= INSIST {
+                watching = Some(biggest);
+                rival = 0;
+                true
             } else {
-                if distance > DEADZONE {
-                    following = true;
-                } else if distance <= ARRIVED {
-                    following = false;
-                }
-                if following {
-                    camera = (camera.0 + dx * EASING, camera.1 + dy * EASING);
-                }
+                watching = Some(held);
+                false
+            }
+        } else {
+            rival = 0;
+            watching = Some(held);
+            false
+        };
+
+        let (u, v) = watching.unwrap_or(held).centre();
+        if cut {
+            camera = (u, v);
+            following = false;
+        } else {
+            let (dx, dy) = (u - camera.0, v - camera.1);
+            let away = (dx * dx + dy * dy).sqrt();
+            if away > DEADZONE {
+                following = true;
+            } else if away <= ARRIVED {
+                following = false;
+            }
+            if following {
+                camera = (camera.0 + dx * EASING, camera.1 + dy * EASING);
             }
         }
         path.push(camera);
@@ -321,70 +376,101 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_subject_is_the_largest_face() {
-        let faces = [face(0.1, 0.4, 0.05), face(0.6, 0.4, 0.20)];
-        let picked = pick_subject(&faces).expect("a face");
-        assert!((picked.w - 0.20).abs() < 1e-9);
-    }
-
-    #[test]
-    fn two_faces_of_a_size_do_not_flicker_the_camera_between_them() {
-        // Same size within the detector's wobble; the middle one wins, and
-        // keeps winning when the other one's box grows a percent.
-        let near = face(0.45, 0.45, 0.100);
-        let far = face(0.05, 0.45, 0.098);
-        assert_eq!(pick_subject(&[near, far]).unwrap().x, near.x);
-        let far_grown = face(0.05, 0.45, 0.102);
-        assert_eq!(pick_subject(&[near, far_grown]).unwrap().x, near.x);
-    }
-
-    #[test]
-    fn no_face_is_no_subject() {
-        assert!(pick_subject(&[]).is_none());
+    /// A face of width `w`, centred at `u` across and halfway down.
+    fn seen(u: f64, w: f64) -> Face {
+        Face {
+            x: u - w / 2.0,
+            y: 0.5 - w / 2.0,
+            w,
+            h: w,
+            score: 0.9,
+        }
     }
 
     #[test]
     fn a_still_head_holds_the_camera_still() {
         // Drift well inside the deadzone, every sample.
-        let seen: Vec<_> = (0..40)
-            .map(|i| Some((0.4 + (i % 2) as f64 * 0.01, 0.5)))
+        let samples: Vec<Vec<Face>> = (0..40)
+            .map(|i| vec![seen(0.4 + f64::from(i % 2) * 0.01, 0.12)])
             .collect();
-        let path = follow(&seen);
+        let path = follow(&samples);
         for p in &path {
-            assert!((p.0 - 0.4).abs() < 1e-9, "the camera moved to {p:?}");
+            assert!((p.0 - path[0].0).abs() < 1e-9, "the camera moved to {p:?}");
         }
     }
 
     #[test]
-    fn a_walk_is_followed_but_never_snapped_to() {
-        let seen: Vec<_> = (0..60).map(|_| Some((0.8, 0.5))).collect();
-        let path = follow(&seen);
-        // It sets out from the subject's first position, so a single
-        // sample is already there; give it a start away from the target.
-        let mut seen2 = vec![Some((0.2, 0.5))];
-        seen2.extend(std::iter::repeat_n(Some((0.5, 0.5)), 60));
-        let path2 = follow(&seen2);
-        assert!((path[0].0 - 0.8).abs() < 1e-9);
-        // Under the cut distance, so it glides: not there on the first step.
-        assert!(path2[1].0 > 0.2 && path2[1].0 < 0.5, "{:?}", path2[1]);
-        // And has arrived by the end.
-        assert!((path2.last().unwrap().0 - 0.5).abs() < 0.01);
+    fn two_speakers_of_a_size_never_make_the_picture_dance() {
+        // The bug this exists for. Two people the same distance from one
+        // camera measure within a percent of each other, and which is
+        // "largest" then flips with the detector's noise. Choosing afresh
+        // each frame turned every flip into a cut, and the picture danced
+        // between them for the whole clip.
+        let samples: Vec<Vec<Face>> = (0..60)
+            .map(|i| {
+                let wobble = f64::from(i % 2) * 0.002;
+                vec![seen(0.25, 0.100 + wobble), seen(0.75, 0.101 - wobble)]
+            })
+            .collect();
+        let path = follow(&samples);
+        for (i, p) in path.iter().enumerate() {
+            assert!(
+                (p.0 - path[0].0).abs() < 1e-9,
+                "sample {i}: the camera left {:?} for {p:?}",
+                path[0]
+            );
+        }
     }
 
     #[test]
-    fn a_change_of_speaker_is_a_cut_and_not_a_glide() {
-        let mut seen = vec![Some((0.15, 0.5)); 5];
-        seen.extend(std::iter::repeat_n(Some((0.85, 0.5)), 5));
-        let path = follow(&seen);
-        assert!((path[4].0 - 0.15).abs() < 1e-9);
-        assert!((path[5].0 - 0.85).abs() < 1e-9, "should cut: {:?}", path[5]);
+    fn a_real_change_of_speaker_cuts_but_only_once_it_insists() {
+        // One guest leans in and fills the frame, and stays that way.
+        let samples: Vec<Vec<Face>> = (0..20)
+            .map(|_| vec![seen(0.25, 0.10), seen(0.75, 0.20)])
+            .collect();
+        let path = follow(&samples);
+        assert!((path[0].0 - 0.75).abs() < 1e-9, "starts on the larger one");
+
+        // Now the other way round: the camera is already on the small one.
+        let mut samples = vec![vec![seen(0.25, 0.10)]];
+        samples.extend((0..20).map(|_| vec![seen(0.25, 0.10), seen(0.75, 0.20)]));
+        let path = follow(&samples);
+        assert!((path[0].0 - 0.25).abs() < 1e-9);
+        for (i, p) in path.iter().enumerate().take(INSIST) {
+            assert!(
+                (p.0 - 0.25).abs() < 1e-9,
+                "sample {i} left too early: {p:?}"
+            );
+        }
+        assert!(
+            (path[INSIST].0 - 0.75).abs() < 1e-9,
+            "should have cut by now: {:?}",
+            path[INSIST]
+        );
+    }
+
+    #[test]
+    fn a_walk_is_followed_but_never_snapped_to() {
+        // One face, starting at the left and then standing at the middle.
+        let mut samples = vec![vec![seen(0.2, 0.12)]];
+        samples.extend((0..60).map(|_| vec![seen(0.5, 0.12)]));
+        let path = follow(&samples);
+        assert!((path[0].0 - 0.2).abs() < 1e-9);
+        // A glide, not a jump: partway on the first step.
+        assert!(path[1].0 > 0.2 && path[1].0 < 0.5, "{:?}", path[1]);
+        // And arrived by the end.
+        assert!((path.last().unwrap().0 - 0.5).abs() < 0.01);
     }
 
     #[test]
     fn a_frame_with_nobody_in_it_leaves_the_camera_where_it_was() {
-        let seen = vec![Some((0.8, 0.5)), None, None, Some((0.8, 0.5))];
-        let path = follow(&seen);
+        let samples = vec![
+            vec![seen(0.8, 0.12)],
+            Vec::new(),
+            Vec::new(),
+            vec![seen(0.8, 0.12)],
+        ];
+        let path = follow(&samples);
         assert_eq!(path[1], path[0]);
         assert_eq!(path[2], path[0]);
     }
