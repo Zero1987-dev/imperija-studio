@@ -1070,7 +1070,10 @@ mod tests {
 
     /// Six samples a second of two people sat at 0.25 and 0.75, where
     /// whoever has the floor has a mouth that moves and the other does not.
-    fn two_speakers(turns: &[Turn], seconds: f64) -> Vec<Vec<Face>> {
+    ///
+    /// `left_voice` is which voice the left-hand chair holds, so the same
+    /// turns can be run with the two of them sat the other way round.
+    fn two_speakers(turns: &[Turn], seconds: f64, left_voice: usize) -> Vec<Vec<Face>> {
         let rate = 6.0;
         let n = (seconds * rate) as usize;
         (0..n)
@@ -1083,9 +1086,11 @@ mod tests {
                 // A mouth that is working reads differently frame to frame;
                 // a mouth at rest reads the same every time.
                 let moving = if i % 2 == 0 { 0.85 } else { 1.0 };
+                let left = talking == Some(left_voice);
+                let right = talking.is_some() && !left;
                 vec![
-                    lips(0.25, if talking == Some(0) { moving } else { 0.85 }),
-                    lips(0.75, if talking == Some(1) { moving } else { 0.85 }),
+                    lips(0.25, if left { moving } else { 0.85 }),
+                    lips(0.75, if right { moving } else { 0.85 }),
                 ]
             })
             .collect()
@@ -1121,25 +1126,15 @@ mod tests {
                 speaker: 1,
             },
         ];
-        let samples = two_speakers(&turns, 20.0);
+        let samples = two_speakers(&turns, 20.0, 0);
         assert_eq!(bind(&samples, &turns, 6.0), vec![0, 1]);
 
-        // And the other way round, to prove it is reading the mouths and
-        // not just handing out seats in order.
-        let swapped = [
-            Turn {
-                start: 0.0,
-                end: 10.0,
-                speaker: 1,
-            },
-            Turn {
-                start: 10.0,
-                end: 20.0,
-                speaker: 0,
-            },
-        ];
-        let samples = two_speakers(&swapped, 20.0);
-        assert_eq!(bind(&samples, &swapped, 6.0), vec![1, 0]);
+        // The same turns with the two of them sat the other way round. Only
+        // the mouths say so - the audio is identical - so an answer that
+        // merely handed out chairs in order would not change here, and this
+        // is the assertion that would catch it.
+        let samples = two_speakers(&turns, 20.0, 1);
+        assert_eq!(bind(&samples, &turns, 6.0), vec![1, 0]);
     }
 
     #[test]
@@ -1165,9 +1160,9 @@ mod tests {
             end: 20.0,
             speaker: 0,
         }];
-        assert!(bind(&two_speakers(&turns, 20.0), &one_voice, 6.0).is_empty());
+        assert!(bind(&two_speakers(&turns, 20.0, 0), &one_voice, 6.0).is_empty());
         // No audio at all.
-        assert!(bind(&two_speakers(&turns, 20.0), &[], 6.0).is_empty());
+        assert!(bind(&two_speakers(&turns, 20.0, 0), &[], 6.0).is_empty());
     }
 
     #[test]
@@ -1184,7 +1179,7 @@ mod tests {
                 speaker: 1,
             },
         ];
-        let samples = two_speakers(&turns, 20.0);
+        let samples = two_speakers(&turns, 20.0, 0);
         let path = follow_speaking(&samples, sense(), &turns, 6.0);
         // On the left-hand speaker while they hold the floor.
         assert!((path[30].0 - 0.25).abs() < 0.01, "{:?}", path[30]);
@@ -1226,7 +1221,7 @@ mod tests {
                 speaker: 0,
             },
         ];
-        let samples = two_speakers(&turns, 16.0);
+        let samples = two_speakers(&turns, 16.0, 0);
         let path = follow_speaking(&samples, sense(), &turns, 6.0);
         for (i, p) in path.iter().enumerate() {
             assert!(
@@ -1250,7 +1245,7 @@ mod tests {
                 speaker: 1,
             },
         ];
-        let samples = two_speakers(&turns, 20.0);
+        let samples = two_speakers(&turns, 20.0, 0);
         assert_eq!(
             follow_speaking(&samples, sense(), &[], 6.0),
             follow(&samples, sense())
