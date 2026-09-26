@@ -103,9 +103,11 @@ concat-server.workspace = true
 concat-api.workspace = true
 # The effect catalogue: the inspector's shelves and each link's knobs.
 concat-effects.workspace = true
+# The bundled caption faces, so the font menu offers the engine's own list
+# rather than a copy of it typed into the .slint file.
+concat-text.workspace = true
 # The cutout's mapping from a stage press to a source fraction; the model
 # itself runs in the host.
-concat-text.workspace = true
 concat-vision.workspace = true
 
 # Remembered preferences, as a small JSON file in the config directory.
