@@ -170,6 +170,16 @@ pub fn run() -> Result<(), slint::PlatformError> {
     // and a reset rebuilds every row that hangs off it.
     {
         let editor = app.global::<Editor>();
+        // The engine's own list rather than one typed here twice. Its
+        // tests prove every name in it is bundled and can spell the
+        // language, so there is nothing to check for at startup.
+        editor.set_font_families(ModelRc::from(
+            concat_text::FAMILIES
+                .iter()
+                .map(|family| SharedString::from(*family))
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ));
         let models = &shell.models;
         editor.set_timeline_tabs(ModelRc::from(models.tabs.clone()));
         editor.set_tracks(ModelRc::from(models.tracks.clone()));

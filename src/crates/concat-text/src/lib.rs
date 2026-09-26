@@ -201,12 +201,50 @@ impl Default for Fonts {
 /// installed it. The window embeds the same five files (concat/ui/app.slint).
 /// Licensed under the SIL Open Font License; see fonts/LICENSE-HankenGrotesk.txt.
 pub const BUNDLED_FAMILY: &str = "Hanken Grotesk";
-const BUNDLED: [&[u8]; 5] = [
+
+/// The families this build carries, in the order a font picker offers them.
+///
+/// [`BUNDLED_FAMILY`] first because it is the interface's own face and the
+/// one a new title is set in. The rest are for captions over video: heavy,
+/// condensed, high-contrast faces of the sort a short is read in at arm's
+/// length on a phone, rather than the text faces a word processor ships.
+///
+/// Every one is under the SIL Open Font License, which permits carrying
+/// them inside a program and passing that program on.
+///
+/// **And every one was checked to cover č ć ž š đ before it was let in.**
+/// Display faces are drawn for English first and a good many of them stop
+/// at the plain alphabet; one that cannot spell the language it is captioning
+/// is not a font, it is a trap, and the check is in the tests below.
+pub const FAMILIES: [&str; 8] = [
+    BUNDLED_FAMILY,
+    "Anton",
+    "Archivo Black",
+    "Bebas Neue",
+    "Bungee",
+    "Fjalla One",
+    "Poppins",
+    "Rubik Mono One",
+];
+
+/// The letters a caption in this language needs, beyond the plain alphabet.
+pub const OUR_LETTERS: &str = "čćžšđČĆŽŠĐ";
+
+const BUNDLED: [&[u8]; 14] = [
     include_bytes!("../fonts/HankenGrotesk-Regular.ttf"),
     include_bytes!("../fonts/HankenGrotesk-Medium.ttf"),
     include_bytes!("../fonts/HankenGrotesk-SemiBold.ttf"),
     include_bytes!("../fonts/HankenGrotesk-Bold.ttf"),
     include_bytes!("../fonts/HankenGrotesk-Italic.ttf"),
+    include_bytes!("../fonts/Anton-Regular.ttf"),
+    include_bytes!("../fonts/ArchivoBlack-Regular.ttf"),
+    include_bytes!("../fonts/BebasNeue-Regular.ttf"),
+    include_bytes!("../fonts/Bungee-Regular.ttf"),
+    include_bytes!("../fonts/FjallaOne-Regular.ttf"),
+    include_bytes!("../fonts/Poppins-Regular.ttf"),
+    include_bytes!("../fonts/Poppins-Bold.ttf"),
+    include_bytes!("../fonts/Poppins-Black.ttf"),
+    include_bytes!("../fonts/RubikMonoOne-Regular.ttf"),
 ];
 
 /// Faces that used to be bundled and no longer are: a document that names
@@ -229,6 +267,55 @@ impl Fonts {
     /// that names its family falls back to a system face.
     pub fn add_file(&mut self, path: &std::path::Path) -> bool {
         self.db.load_font_file(path).is_ok()
+    }
+
+    /// Whether a family is here under exactly that name.
+    ///
+    /// Asked without a fallback on purpose: [`pick`](Self::pick) answers
+    /// with *something* for any name at all, which is right when painting a
+    /// title and useless when deciding what to put in a menu.
+    pub fn has_family(&self, family: &str) -> bool {
+        self.db
+            .query(&fontdb::Query {
+                families: &[fontdb::Family::Name(family)],
+                weight: fontdb::Weight::NORMAL,
+                stretch: fontdb::Stretch::Normal,
+                style: fontdb::Style::Normal,
+            })
+            .is_some()
+    }
+
+    /// Whether a family can actually draw these characters, rather than
+    /// merely being installed.
+    ///
+    /// A font answers a request for a character it has no glyph for with a
+    /// blank box, and a caption full of blank boxes is worse than one in a
+    /// face nobody chose. Asked of the face the family is found at.
+    pub fn family_covers(&self, family: &str, text: &str) -> bool {
+        let Some(id) = self.db.query(&fontdb::Query {
+            families: &[fontdb::Family::Name(family)],
+            weight: fontdb::Weight::NORMAL,
+            stretch: fontdb::Stretch::Normal,
+            style: fontdb::Style::Normal,
+        }) else {
+            return false;
+        };
+        self.db
+            .with_face_data(id, |data, index| {
+                ttf_parser::Face::parse(data, index)
+                    .is_ok_and(|face| text.chars().all(|c| face.glyph_index(c).is_some()))
+            })
+            .unwrap_or(false)
+    }
+
+    /// The families to offer, in [`FAMILIES`] order, leaving out any whose
+    /// file failed to parse.
+    pub fn families(&self) -> Vec<String> {
+        FAMILIES
+            .iter()
+            .filter(|family| self.has_family(family))
+            .map(|family| (*family).to_owned())
+            .collect()
     }
 
     /// The best face for a style: the named family at the nearest weight and
@@ -979,6 +1066,29 @@ mod tests {
         assert_eq!(colour("#00ff0080"), Some(Color::from_rgba8(0, 255, 0, 128)));
         assert_eq!(colour(""), None);
         assert_eq!(colour("red"), None);
+    }
+
+    #[test]
+    fn every_bundled_family_is_here_and_can_spell_the_language() {
+        // The check that keeps a display face out. Most of these are drawn
+        // for English first, and one that stops at the plain alphabet would
+        // set "ŠTA ĆEŠ" as three letters and four empty boxes.
+        let fonts = Fonts::new();
+        for family in FAMILIES {
+            assert!(fonts.has_family(family), "{family} is not bundled");
+            assert!(
+                fonts.family_covers(family, OUR_LETTERS),
+                "{family} cannot spell {OUR_LETTERS}"
+            );
+        }
+        assert_eq!(fonts.families().len(), FAMILIES.len());
+    }
+
+    #[test]
+    fn a_family_nobody_has_is_not_offered() {
+        let fonts = Fonts::new();
+        assert!(!fonts.has_family("No Such Family At All"));
+        assert!(!fonts.family_covers("No Such Family At All", "a"));
     }
 
     /// The bundled face answers by name at every weight the interface uses,

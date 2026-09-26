@@ -37,6 +37,12 @@ export global Editor {
     // The arrangement is a tree and it lives in Rust; see dock.slint. These
     // two are that tree walked into boxes, and everything the workspace draws
     // it draws out of them.
+    /// The font families this build carries, in the order to offer them.
+    /// Set once from Rust out of `concat_text::FAMILIES`, filtered to the
+    /// ones whose file actually parsed, so the menu can never offer a face
+    /// that is not there.
+    in-out property <[string]> font-families: ["Hanken Grotesk"];
+
     in-out property <[SeatBox]> seats;
     in-out property <[DockDivider]> dividers;
 
