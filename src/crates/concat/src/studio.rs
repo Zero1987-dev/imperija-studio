@@ -717,7 +717,11 @@ pub struct Studio {
     /// then clears the selection on the release - and a commit that looked
     /// the clip up in the selection at landing time found nothing and
     /// dropped the words with the echo.
-    commit_target: Option<String>,
+    /// The clips the echo was written for, and so the ones the commit
+    /// turns into commands. A list because the text panel writes to every
+    /// selected title at once, and a commit that looked at one of them
+    /// landed the first caption's new face and quietly dropped the rest.
+    commit_targets: Vec<String>,
     commit_timer: slint::Timer,
     /// What the catalogue shelves were last built from; while nothing in
     /// it changes the shelves are not rebuilt.
@@ -1454,7 +1458,7 @@ impl Studio {
             revision: 0,
             flat: None,
             commit_pending: false,
-            commit_target: None,
+            commit_targets: Vec::new(),
             commit_timer: slint::Timer::default(),
             shelf_stamp: std::cell::RefCell::new(None),
             look_art: std::cell::RefCell::new(HashMap::new()),
@@ -3501,10 +3505,10 @@ impl Studio {
 
     pub fn clip_set(&mut self, field: ClipField, value: f32) {
         let ids = self.editing_for(field);
-        let Some(first) = ids.first().cloned() else {
+        if ids.is_empty() {
             return;
-        };
-        self.commit_target = Some(first);
+        }
+        self.commit_targets.clone_from(&ids);
         for id in &ids {
             self.clip_set_on(id, field, value);
         }
@@ -3679,10 +3683,10 @@ impl Studio {
                 words
             }
         };
-        let Some(first) = ids.first().cloned() else {
+        if ids.is_empty() {
             return;
-        };
-        self.commit_target = Some(first);
+        }
+        self.commit_targets.clone_from(&ids);
         self.begin_echo();
         for id in &ids {
             let Some(clip) = self.echo_clip_mut(id) else {
@@ -3730,10 +3734,10 @@ impl Studio {
                 words
             }
         };
-        let Some(first) = ids.first().cloned() else {
+        if ids.is_empty() {
             return;
-        };
-        self.commit_target = Some(first);
+        }
+        self.commit_targets.clone_from(&ids);
         self.begin_echo();
         for id in &ids {
             let Some(clip) = self.echo_clip_mut(id) else {
@@ -3786,13 +3790,52 @@ impl Studio {
     }
 
     fn commit_now(&mut self) {
-        // The clip the echo was written for, whatever is selected now; see
-        // `commit_target`. The selection is the fallback for a commit asked
+        // The clips the echo was written for, whatever is selected now; see
+        // `commit_targets`. The selection is the fallback for a commit asked
         // for with nothing written, which has nothing to land anyway.
-        let Some(id) = self.commit_target.take().or_else(|| self.sole_selection()) else {
+        let mut ids = std::mem::take(&mut self.commit_targets);
+        if ids.is_empty() {
+            ids = self.sole_selection().into_iter().collect();
+        }
+        let Some(head) = ids.first().cloned() else {
             self.echo = None;
             return;
         };
+        let mut commands = Vec::new();
+        for id in &ids {
+            commands.extend(self.clip_commands(id));
+        }
+        self.echo = None;
+        if commands.is_empty() {
+            return;
+        }
+        // One undo step per gesture, not per pointer move: a commit that
+        // changes the same things on the same clips as the last, within a
+        // moment of it, folds into the last one's step. The editor does the
+        // folding; this decides when a pause is long enough to be a new
+        // gesture on the same knob. The count is in the key so that widening
+        // the selection starts a new step rather than joining the old one.
+        let key = format!("{head}x{}:{}", ids.len(), commit_key(&commands));
+        let now = std::time::Instant::now();
+        let continues = self
+            .last_commit
+            .as_ref()
+            .is_some_and(|(last, at)| *last == key && now.duration_since(*at).as_millis() < 900);
+        if !continues && let Some(session) = self.session.as_mut() {
+            session.end_gesture();
+        }
+        let command = match commands.len() {
+            1 => commands.remove(0),
+            _ => Command::Batch { commands },
+        };
+        self.apply_within(&key, command);
+        self.last_commit = Some((key, now));
+    }
+
+    /// The commands that carry one clip from what the session holds to what
+    /// the echo holds. Empty when nothing about it changed.
+    fn clip_commands(&self, id: &str) -> Vec<Command> {
+        let id = id.to_owned();
         let (Some(after), Some(before)) = (
             self.echo
                 .as_ref()
@@ -3803,8 +3846,7 @@ impl Studio {
                 .and_then(|session| session.project().active().clip(&id))
                 .cloned(),
         ) else {
-            self.echo = None;
-            return;
+            return Vec::new();
         };
         let mut commands = Vec::new();
         if after.scale != before.scale
@@ -3895,30 +3937,7 @@ impl Studio {
         if patch != ClipPatch::default() {
             commands.push(Command::UpdateClip { clip_id: id, patch });
         }
-        self.echo = None;
-        if commands.is_empty() {
-            return;
-        }
-        // One undo step per gesture, not per pointer move: a commit that
-        // changes the same things on the same clip as the last, within a
-        // moment of it, folds into the last one's step. The editor does the
-        // folding; this decides when a pause is long enough to be a new
-        // gesture on the same knob.
-        let key = format!("{}:{}", after.id, commit_key(&commands));
-        let now = std::time::Instant::now();
-        let continues = self
-            .last_commit
-            .as_ref()
-            .is_some_and(|(last, at)| *last == key && now.duration_since(*at).as_millis() < 900);
-        if !continues && let Some(session) = self.session.as_mut() {
-            session.end_gesture();
-        }
-        let command = match commands.len() {
-            1 => commands.remove(0),
-            _ => Command::Batch { commands },
-        };
-        self.apply_within(&key, command);
-        self.last_commit = Some((key, now));
+        commands
     }
 
     // ── the stage ──
