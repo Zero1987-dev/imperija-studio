@@ -155,28 +155,48 @@ pub const REACH: f64 = 4.0;
 /// when the speech runs on without one, or when there are no words at all.
 /// Moving a clip's end is a small liberty; moving it far is not.
 pub fn ends_at(words: &[Word], wanted: f64, reach: f64) -> f64 {
-    for pair in words.windows(2) {
+    let Some(last) = words.last() else {
+        return wanted;
+    };
+    // Past the last word: nothing is said after, so nothing is cut in
+    // half. The final word still gets room to finish, since where a word
+    // ends is the one time the captions do not carry.
+    if wanted >= last.at {
+        return (last.at + SETTLE).max(wanted).min(wanted + reach);
+    }
+    for (i, pair) in words.windows(2).enumerate() {
         let (word, next) = (&pair[0], &pair[1]);
-        let gap = next.at - word.at;
-        if gap <= PAUSE {
+        if !(word.at <= wanted && wanted < next.at) {
             continue;
         }
-        // Just past the last word before the silence, not into it.
-        let settled = word.at + gap.min(SETTLE);
-        if settled >= wanted {
-            return if settled <= wanted + reach {
-                settled
-            } else {
-                wanted
-            };
+        // The end already lands in a silence: nothing is being said there,
+        // so running on would only add speech nobody asked for.
+        if next.at - word.at > PAUSE {
+            return wanted;
         }
+        // Mid-phrase. Run on to the first real silence after it.
+        for after in words[i + 1..].windows(2) {
+            let gap = after[1].at - after[0].at;
+            if gap > PAUSE {
+                let settled = after[0].at + gap.min(SETTLE);
+                return if settled <= wanted + reach {
+                    settled
+                } else {
+                    wanted
+                };
+            }
+        }
+        // Speech to the very end: stop just after the last word, when that
+        // is near enough to still be the clip that was asked for.
+        let settled = last.at + SETTLE;
+        return if settled <= wanted + reach {
+            settled
+        } else {
+            wanted
+        };
     }
-    // Past the last word: nothing is said after `wanted`, so there is
-    // nothing to be cut off mid-way.
-    match words.last() {
-        Some(last) if last.at >= wanted && last.at + SETTLE <= wanted + reach => last.at + SETTLE,
-        _ => wanted,
-    }
+    // Before the first word is spoken.
+    wanted
 }
 
 /// The captions that fall inside a stretch of the video, with their times
@@ -328,8 +348,8 @@ mod tests {
     }
 
     #[test]
-    fn the_end_moves_on_to_the_next_silence() {
-        // Speech, then a gap after "three", then more.
+    fn an_end_mid_phrase_runs_on_to_the_next_silence() {
+        // Speech, a silence after "three", then more speech.
         let words = say(&[
             (0.0, "one"),
             (0.3, "two"),
@@ -337,16 +357,20 @@ mod tests {
             (2.0, "four"),
             (2.3, "five"),
         ]);
-        // Asked to end at 1.0, mid-silence-ward: ends just after "three".
-        let end = ends_at(&words, 1.0, REACH);
+        // 0.5 falls between "two" and "three": a word is being said, so
+        // the end runs on to just after "three", where the silence starts.
+        let end = ends_at(&words, 0.5, REACH);
         assert!((end - (0.6 + SETTLE)).abs() < 1e-9, "{end}");
     }
 
     #[test]
-    fn an_end_already_at_a_silence_is_left_alone() {
-        let words = say(&[(0.0, "one"), (2.0, "two")]);
-        let end = ends_at(&words, 0.1, REACH);
-        assert!((end - (0.0 + SETTLE)).abs() < 1e-9, "{end}");
+    fn an_end_already_in_a_silence_is_left_exactly_where_it_was() {
+        // 1.0 falls in the gap between "one" and "two": no word is being
+        // cut in half, so running on would only add speech nobody asked
+        // for. This is the case the first version of this got wrong - it
+        // ran through the whole silence and into the sentence after it.
+        let words = say(&[(0.0, "one"), (2.0, "two"), (2.3, "three")]);
+        assert!((ends_at(&words, 1.0, REACH) - 1.0).abs() < 1e-9);
     }
 
     #[test]
