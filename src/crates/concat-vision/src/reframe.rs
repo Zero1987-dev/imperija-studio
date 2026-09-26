@@ -366,16 +366,6 @@ mod tests {
         }
     }
 
-    fn face(x: f64, y: f64, w: f64) -> Face {
-        Face {
-            x,
-            y,
-            w,
-            h: w,
-            score: 0.9,
-        }
-    }
-
     /// A face of width `w`, centred at `u` across and halfway down.
     fn seen(u: f64, w: f64) -> Face {
         Face {
