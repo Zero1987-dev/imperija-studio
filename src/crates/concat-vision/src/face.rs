@@ -57,6 +57,11 @@ pub struct Level<'a> {
     pub obj: &'a [f32],
     /// Four numbers per cell: the nudge to its middle, then the size.
     pub bbox: &'a [f32],
+    /// Ten numbers per cell: five points, each an x then a y, nudged from
+    /// the cell the same way the box is. Right eye, left eye, nose, right
+    /// mouth corner, left mouth corner - the order YuNet was trained in.
+    /// An empty slice is allowed and leaves [`Face::mouth`] zero.
+    pub kps: &'a [f32],
 }
 
 /// How a picture sits inside the model's input: scaled to fit, centred,
@@ -137,12 +142,55 @@ pub fn decode(level: &Level, at: &Fit) -> Vec<Face> {
         let h = f64::from(b[3]).exp() * s;
         let cx = (col as f64 + f64::from(b[0])) * s;
         let cy = (row as f64 + f64::from(b[1])) * s;
+        let mouth = if level.kps.len() >= (i + 1) * 10 {
+            mouth_drop(&level.kps[i * 10..i * 10 + 10], col, row, s)
+        } else {
+            0.0
+        };
         let (x, y, w, h) = at.undo(cx - w / 2.0, cy - h / 2.0, w, h);
         if w > 0.0 && h > 0.0 {
-            out.push(Face { x, y, w, h, score });
+            out.push(Face {
+                x,
+                y,
+                w,
+                h,
+                score,
+                mouth,
+            });
         }
     }
     out
+}
+
+/// How far the mouth sits below the eyes, in eye-widths - [`Face::mouth`].
+///
+/// Worked in model pixels rather than source fractions on purpose. The
+/// letterbox keeps the picture's shape, so distances there are the same in
+/// both directions; fractions are divided by the source's width one way and
+/// its height the other, and a ratio built out of those two would change
+/// with the shape of the video rather than with the face.
+///
+/// Zero when the eyes land on top of each other, which is what a profile
+/// or a bad frame looks like and is not a number worth dividing by.
+pub fn mouth_drop(kps: &[f32], col: usize, row: usize, stride: f64) -> f64 {
+    if kps.len() < 10 {
+        return 0.0;
+    }
+    let at = |j: usize| {
+        (
+            (col as f64 + f64::from(kps[j * 2])) * stride,
+            (row as f64 + f64::from(kps[j * 2 + 1])) * stride,
+        )
+    };
+    let (rex, rey) = at(0);
+    let (lex, ley) = at(1);
+    let (_, rmy) = at(3);
+    let (_, lmy) = at(4);
+    let eyes = ((lex - rex).powi(2) + (ley - rey).powi(2)).sqrt();
+    if eyes <= f64::EPSILON {
+        return 0.0;
+    }
+    (f64::midpoint(rmy, lmy) - f64::midpoint(rey, ley)) / eyes
 }
 
 /// How much two boxes overlap, as a fraction of the area they cover
@@ -240,7 +288,14 @@ impl Detector {
         };
         let names: Vec<String> = STRIDES
             .iter()
-            .flat_map(|s| [format!("cls_{s}"), format!("obj_{s}"), format!("bbox_{s}")])
+            .flat_map(|s| {
+                [
+                    format!("cls_{s}"),
+                    format!("obj_{s}"),
+                    format!("bbox_{s}"),
+                    format!("kps_{s}"),
+                ]
+            })
             .collect();
         let wanted: Vec<&str> = names.iter().map(String::as_str).collect();
         let out = self.model.run(vec![input], &wanted)?;
@@ -256,9 +311,10 @@ impl Detector {
             faces.extend(decode(
                 &Level {
                     stride: *stride,
-                    cls: &out[i * 3].data,
-                    obj: &out[i * 3 + 1].data,
-                    bbox: &out[i * 3 + 2].data,
+                    cls: &out[i * 4].data,
+                    obj: &out[i * 4 + 1].data,
+                    bbox: &out[i * 4 + 2].data,
+                    kps: &out[i * 4 + 3].data,
                 },
                 &at,
             ));
@@ -314,7 +370,7 @@ mod tests {
     }
 
     /// One grid with a single confident cell, and everything else silent.
-    fn level(stride: usize, cell: usize, b: [f32; 4]) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    fn level(stride: usize, cell: usize, b: [f32; 4]) -> Grid {
         let cells = (INPUT_W / stride) * (INPUT_H / stride);
         let mut cls = vec![0.0; cells];
         let mut obj = vec![0.0; cells];
@@ -322,7 +378,32 @@ mod tests {
         cls[cell] = 1.0;
         obj[cell] = 1.0;
         bbox[cell * 4..cell * 4 + 4].copy_from_slice(&b);
-        (cls, obj, bbox)
+        Grid {
+            cls,
+            obj,
+            bbox,
+            kps: vec![0.0; cells * 10],
+        }
+    }
+
+    /// The three planes a grid answers with, owned, plus its points.
+    struct Grid {
+        cls: Vec<f32>,
+        obj: Vec<f32>,
+        bbox: Vec<f32>,
+        kps: Vec<f32>,
+    }
+
+    impl Grid {
+        fn level(&self, stride: usize) -> Level<'_> {
+            Level {
+                stride,
+                cls: &self.cls,
+                obj: &self.obj,
+                bbox: &self.bbox,
+                kps: &self.kps,
+            }
+        }
     }
 
     #[test]
@@ -331,17 +412,9 @@ mod tests {
         let cols = INPUT_W / stride;
         let (row, col) = (3usize, 5usize);
         // No nudge, and a box two cells across.
-        let (cls, obj, bbox) = level(stride, row * cols + col, [0.0, 0.0, 2f32.ln(), 2f32.ln()]);
+        let grid = level(stride, row * cols + col, [0.0, 0.0, 2f32.ln(), 2f32.ln()]);
         let at = fit(INPUT_W as f64, INPUT_H as f64);
-        let faces = decode(
-            &Level {
-                stride,
-                cls: &cls,
-                obj: &obj,
-                bbox: &bbox,
-            },
-            &at,
-        );
+        let faces = decode(&grid.level(stride), &at);
         assert_eq!(faces.len(), 1, "{faces:?}");
         let f = faces[0];
         let (u, v) = f.centre();
@@ -359,22 +432,11 @@ mod tests {
     #[test]
     fn a_doubtful_cell_is_not_a_face() {
         let stride = 32;
-        let (mut cls, obj, bbox) = level(stride, 10, [0.0, 0.0, 0.0, 0.0]);
+        let mut grid = level(stride, 10, [0.0, 0.0, 0.0, 0.0]);
         // sqrt(0.2 * 1.0) is under the threshold.
-        cls[10] = 0.2;
+        grid.cls[10] = 0.2;
         let at = fit(INPUT_W as f64, INPUT_H as f64);
-        assert!(
-            decode(
-                &Level {
-                    stride,
-                    cls: &cls,
-                    obj: &obj,
-                    bbox: &bbox
-                },
-                &at
-            )
-            .is_empty()
-        );
+        assert!(decode(&grid.level(stride), &at).is_empty());
     }
 
     #[test]
@@ -387,6 +449,7 @@ mod tests {
                 cls: &short,
                 obj: &short,
                 bbox: &short,
+                kps: &[],
             },
             &at,
         );
@@ -400,6 +463,7 @@ mod tests {
             w,
             h: w,
             score,
+            mouth: 0.0,
         }
     }
 

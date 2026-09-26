@@ -34,6 +34,24 @@ pub struct Face {
     pub h: f64,
     /// How sure the detector is, `0..1`.
     pub score: f64,
+    /// How far the mouth sits below the eyes, in eye-widths.
+    ///
+    /// The detector draws five points on every face - both eyes, the nose
+    /// and the two corners of the mouth - and this is the one number worth
+    /// keeping from them: the drop from the eye line to the mouth line,
+    /// divided by the distance between the eyes. Dividing makes it the
+    /// same number whether the face is near or far, which is what lets two
+    /// people in one shot be compared at all.
+    ///
+    /// It grows as the jaw opens. On its own a single reading says very
+    /// little - a face turned aside reads much the same as a face mid-word
+    /// - but *how much it varies* over a second or two separates a mouth
+    /// that is working from one that is not. See [`bind`], which is the
+    /// only thing that uses it, and uses it over a whole clip rather than a
+    /// moment.
+    ///
+    /// Zero when the detector gave no usable points.
+    pub mouth: f64,
 }
 
 impl Face {
@@ -444,6 +462,292 @@ pub fn follow(samples: &[Vec<Face>], sensitivity: (f64, f64)) -> Vec<(f64, f64)>
     path
 }
 
+/// One stretch of a clip in which one person was speaking.
+///
+/// Comes from the audio, not the picture - see `concat_speech::diarize` -
+/// so it is right about *when* somebody spoke and says nothing at all about
+/// *which face on screen* that was. Joining the two is [`bind`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Turn {
+    /// Seconds from the start of the clip.
+    pub start: f64,
+    /// Seconds from the start of the clip.
+    pub end: f64,
+    /// Which voice, numbered from zero, as the diarizer separated them.
+    pub speaker: usize,
+}
+
+/// How many readings of a mouth are taken together before it means
+/// anything.
+///
+/// Eight, which at [`super::SAMPLE_RATE`] is a second and a third. Speech
+/// moves a jaw around four times a second and this samples six, so the
+/// readings alias badly and say nothing about rhythm - but the *spread* of
+/// them still separates a mouth that is working from one that is not, and
+/// spread is all [`bind`] ever asks for.
+pub const MOUTH_WINDOW: usize = 8;
+
+/// Turns shorter than this are not worth moving a camera for.
+///
+/// A diarizer marks every "mhm" as a turn. Cutting to the other person for
+/// three quarters of a second and straight back is the twitch that makes an
+/// automatic edit obvious, so short turns are left to whoever holds the
+/// shot.
+pub const SHORTEST_TURN: f64 = 0.8;
+
+/// How many faces the clip usually shows at once.
+///
+/// The commonest count rather than the largest: one frame where the
+/// detector found a face in the bookshelf should not convince the camera
+/// there are three people in the room.
+fn crowd(samples: &[Vec<Face>]) -> usize {
+    let mut tally = [0usize; 8];
+    for faces in samples {
+        if (1..=tally.len()).contains(&faces.len()) {
+            tally[faces.len() - 1] += 1;
+        }
+    }
+    tally
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, seen)| **seen)
+        .filter(|(_, seen)| **seen > 0)
+        .map_or(0, |(i, _)| i + 1)
+}
+
+/// The faces of one sample, left to right, when that sample shows the
+/// usual number of them. `None` otherwise - a frame with somebody missing
+/// cannot say who is who by position alone.
+fn seated(faces: &[Face], crowd: usize) -> Option<Vec<Face>> {
+    if crowd == 0 || faces.len() != crowd {
+        return None;
+    }
+    let mut row = faces.to_vec();
+    row.sort_by(|a, b| a.centre().0.total_cmp(&b.centre().0));
+    Some(row)
+}
+
+/// Where each person sits, left to right, as a fraction across the source.
+///
+/// People in a podcast do not swap chairs, so their order across the frame
+/// *is* their identity, and it survives the detector losing one of them for
+/// a moment far better than following boxes about does.
+pub fn places(samples: &[Vec<Face>]) -> Vec<f64> {
+    let crowd = crowd(samples);
+    let mut seen: Vec<Vec<f64>> = vec![Vec::new(); crowd];
+    for faces in samples {
+        let Some(row) = seated(faces, crowd) else {
+            continue;
+        };
+        for (person, face) in row.iter().enumerate() {
+            seen[person].push(face.centre().0);
+        }
+    }
+    seen.into_iter().map(median).collect()
+}
+
+/// How hard each person's mouth was working, sample by sample.
+///
+/// The spread of the last [`MOUTH_WINDOW`] readings of [`Face::mouth`].
+/// Zero where that person was not seen, or too few readings have arrived.
+fn working(samples: &[Vec<Face>]) -> Vec<Vec<f64>> {
+    let crowd = crowd(samples);
+    let mut out = vec![vec![0.0; samples.len()]; crowd];
+    let mut recent: Vec<Vec<f64>> = vec![Vec::new(); crowd];
+    for (at, faces) in samples.iter().enumerate() {
+        let Some(row) = seated(faces, crowd) else {
+            continue;
+        };
+        for (person, face) in row.iter().enumerate() {
+            let seen = &mut recent[person];
+            seen.push(face.mouth);
+            if seen.len() > MOUTH_WINDOW {
+                seen.remove(0);
+            }
+            if seen.len() >= 3 {
+                out[person][at] = spread(seen);
+            }
+        }
+    }
+    out
+}
+
+/// The mean square distance from the middle of a set.
+fn spread(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64
+}
+
+/// Which face belongs to which voice: for each speaker, the person the
+/// camera should be on while that speaker talks.
+///
+/// **One decision per person for the whole clip, and that is the point.**
+/// A single reading of a mouth is nearly worthless - a face turned aside
+/// looks much like a face mid-word - and deciding who is talking from one
+/// moment's readings is what a first attempt at this does and why it fails.
+/// But the audio already says *when* each voice spoke. All that is left is
+/// to ask, over the whole clip, whose mouth worked hardest during voice
+/// nought's turns and whose during voice one's. Twenty seconds of a weak
+/// signal answers that far more surely than a second of it answers anything.
+///
+/// The answer is an index into [`places`] per speaker. An empty answer
+/// means it could not tell - one face, no turns, or two voices that both
+/// picked the same face - and the caller should fall back to [`follow`].
+pub fn bind(samples: &[Vec<Face>], turns: &[Turn], rate: f64) -> Vec<usize> {
+    let crowd = crowd(samples);
+    let voices = turns.iter().map(|t| t.speaker + 1).max().unwrap_or(0);
+    if crowd < 2 || voices < 2 || rate <= 0.0 {
+        return Vec::new();
+    }
+    let effort = working(samples);
+    let speaking_at = |at: usize| -> Option<usize> {
+        let t = at as f64 / rate;
+        turns
+            .iter()
+            .find(|turn| turn.start <= t && t < turn.end)
+            .map(|turn| turn.speaker)
+    };
+
+    // For every pairing, how much harder that person's mouth worked during
+    // that voice's turns than during everyone else's.
+    let mut leaning = vec![vec![f64::NEG_INFINITY; crowd]; voices];
+    for (voice, row) in leaning.iter_mut().enumerate() {
+        for (person, cell) in row.iter_mut().enumerate() {
+            let (mut theirs, mut n_theirs) = (0.0, 0usize);
+            let (mut others, mut n_others) = (0.0, 0usize);
+            for at in 0..samples.len() {
+                let Some(talking) = speaking_at(at) else {
+                    continue;
+                };
+                if talking == voice {
+                    theirs += effort[person][at];
+                    n_theirs += 1;
+                } else {
+                    others += effort[person][at];
+                    n_others += 1;
+                }
+            }
+            if n_theirs == 0 || n_others == 0 {
+                continue;
+            }
+            *cell = theirs / n_theirs as f64 - others / n_others as f64;
+        }
+    }
+
+    // Strongest pairing first, and nobody claimed twice: two voices that
+    // both look like the left-hand face mean the weaker claim is wrong.
+    let mut answer = vec![usize::MAX; voices];
+    let mut taken = vec![false; crowd];
+    for _ in 0..voices.min(crowd) {
+        let mut best: Option<(f64, usize, usize)> = None;
+        for (voice, row) in leaning.iter().enumerate() {
+            if answer[voice] != usize::MAX {
+                continue;
+            }
+            for (person, score) in row.iter().enumerate() {
+                if taken[person] || !score.is_finite() {
+                    continue;
+                }
+                if best.is_none_or(|(top, _, _)| *score > top) {
+                    best = Some((*score, voice, person));
+                }
+            }
+        }
+        let Some((_, voice, person)) = best else {
+            break;
+        };
+        answer[voice] = person;
+        taken[person] = true;
+    }
+    if answer.iter().any(|person| *person == usize::MAX) {
+        return Vec::new();
+    }
+    answer
+}
+
+/// The camera's path when the audio says who is speaking.
+///
+/// Same camera as [`follow`] - still, then a glide, and a cut when the
+/// subject changes - but the subject is chosen by *who is talking* rather
+/// than by whose face is biggest. Whose face is biggest was always the weak
+/// part: two people sat the same distance from one lens measure the same
+/// forever, so the camera either never left the first of them or left on
+/// the detector's noise.
+///
+/// Falls back to [`follow`] whenever the audio cannot help: one face, one
+/// voice, or a binding that did not come out.
+pub fn follow_speaking(
+    samples: &[Vec<Face>],
+    sensitivity: (f64, f64),
+    turns: &[Turn],
+    rate: f64,
+) -> Vec<(f64, f64)> {
+    let voice_of = bind(samples, turns, rate);
+    if voice_of.is_empty() {
+        return follow(samples, sensitivity);
+    }
+    let seats = places(samples);
+    let mut watching: Option<usize> = None;
+    let mut recent: Vec<(f64, f64)> = Vec::with_capacity(STEADY);
+    let mut camera = (0.5, 0.5);
+    let mut started = false;
+    let mut following = false;
+    let mut path = Vec::with_capacity(samples.len());
+
+    for (at, faces) in samples.iter().enumerate() {
+        let t = at as f64 / rate;
+        // Who has the floor, ignoring the interjections too short to move a
+        // camera for. Between turns the camera stays where it was.
+        let speaker = turns
+            .iter()
+            .find(|turn| turn.start <= t && t < turn.end && turn.end - turn.start >= SHORTEST_TURN)
+            .map(|turn| turn.speaker);
+        let wanted = speaker.and_then(|voice| voice_of.get(voice).copied());
+        let Some(person) = wanted.or(watching) else {
+            path.push(camera);
+            continue;
+        };
+        // Their chair, and the face nearest it in this frame.
+        let seat = seats.get(person).copied().unwrap_or(0.5);
+        let Some((face, _)) = nearest(faces, (seat, 0.5)) else {
+            path.push(camera);
+            continue;
+        };
+
+        let cut = watching != Some(person);
+        if cut {
+            recent.clear();
+        }
+        watching = Some(person);
+        recent.push(face.centre());
+        if recent.len() > STEADY {
+            recent.remove(0);
+        }
+        let (u, v) = steady(&recent);
+        if cut || !started {
+            camera = (u, v);
+            following = false;
+            started = true;
+        } else {
+            let (dx, dy) = (u - camera.0, v - camera.1);
+            let away = (dx * sensitivity.0).hypot(dy * sensitivity.1);
+            if away > DEADZONE {
+                following = true;
+            } else if away <= ARRIVED {
+                following = false;
+            }
+            if following {
+                camera = (camera.0 + dx * EASING, camera.1 + dy * EASING);
+            }
+        }
+        path.push(camera);
+    }
+    path
+}
+
 /// The path as keys, with the ones that say nothing left out.
 ///
 /// A key per sampled frame is thousands of keys on a clip nobody can then
@@ -551,6 +855,7 @@ mod tests {
             w,
             h: w,
             score: 0.9,
+            mouth: 0.85,
         }
     }
 
@@ -753,6 +1058,203 @@ mod tests {
         for (i, p) in path.iter().enumerate() {
             assert!((p.0 - path[0].0).abs() < 1e-9, "sample {i} slid to {p:?}");
         }
+    }
+
+    /// A face at `u` whose mouth reads `mouth` this sample.
+    fn lips(u: f64, mouth: f64) -> Face {
+        Face {
+            mouth,
+            ..seen(u, 0.12)
+        }
+    }
+
+    /// Six samples a second of two people sat at 0.25 and 0.75, where
+    /// whoever has the floor has a mouth that moves and the other does not.
+    fn two_speakers(turns: &[Turn], seconds: f64) -> Vec<Vec<Face>> {
+        let rate = 6.0;
+        let n = (seconds * rate) as usize;
+        (0..n)
+            .map(|i| {
+                let t = i as f64 / rate;
+                let talking = turns
+                    .iter()
+                    .find(|turn| turn.start <= t && t < turn.end)
+                    .map(|turn| turn.speaker);
+                // A mouth that is working reads differently frame to frame;
+                // a mouth at rest reads the same every time.
+                let moving = 0.85 + f64::from(i % 2) * 0.15;
+                vec![
+                    lips(0.25, if talking == Some(0) { moving } else { 0.85 }),
+                    lips(0.75, if talking == Some(1) { moving } else { 0.85 }),
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_usual_number_of_faces_is_the_commonest_one() {
+        let mut samples = vec![vec![lips(0.25, 0.85), lips(0.75, 0.85)]; 40];
+        // One frame where the detector found a face in the bookshelf.
+        samples.push(vec![lips(0.1, 0.85), lips(0.5, 0.85), lips(0.9, 0.85)]);
+        samples.push(Vec::new());
+        assert_eq!(crowd(&samples), 2);
+        assert_eq!(places(&samples).len(), 2);
+        assert!((places(&samples)[0] - 0.25).abs() < 1e-9);
+        assert!((places(&samples)[1] - 0.75).abs() < 1e-9);
+        assert_eq!(crowd(&[]), 0);
+    }
+
+    #[test]
+    fn each_voice_is_matched_to_the_face_that_was_moving() {
+        // Voice 0 has the floor first, voice 1 second. The left-hand face
+        // moves during the first stretch, the right-hand one during the
+        // second, so voice 0 is the left face and voice 1 the right.
+        let turns = [
+            Turn {
+                start: 0.0,
+                end: 10.0,
+                speaker: 0,
+            },
+            Turn {
+                start: 10.0,
+                end: 20.0,
+                speaker: 1,
+            },
+        ];
+        let samples = two_speakers(&turns, 20.0);
+        assert_eq!(bind(&samples, &turns, 6.0), vec![0, 1]);
+
+        // And the other way round, to prove it is reading the mouths and
+        // not just handing out seats in order.
+        let swapped = [
+            Turn {
+                start: 0.0,
+                end: 10.0,
+                speaker: 1,
+            },
+            Turn {
+                start: 10.0,
+                end: 20.0,
+                speaker: 0,
+            },
+        ];
+        let samples = two_speakers(&swapped, 20.0);
+        assert_eq!(bind(&samples, &swapped, 6.0), vec![1, 0]);
+    }
+
+    #[test]
+    fn it_admits_when_it_cannot_tell() {
+        let turns = [
+            Turn {
+                start: 0.0,
+                end: 10.0,
+                speaker: 0,
+            },
+            Turn {
+                start: 10.0,
+                end: 20.0,
+                speaker: 1,
+            },
+        ];
+        // One face on screen: nothing to choose between.
+        let alone: Vec<Vec<Face>> = (0..120).map(|_| vec![lips(0.5, 0.9)]).collect();
+        assert!(bind(&alone, &turns, 6.0).is_empty());
+        // Two faces but only one voice: no comparison to draw.
+        let one_voice = [Turn {
+            start: 0.0,
+            end: 20.0,
+            speaker: 0,
+        }];
+        assert!(bind(&two_speakers(&turns, 20.0), &one_voice, 6.0).is_empty());
+        // No audio at all.
+        assert!(bind(&two_speakers(&turns, 20.0), &[], 6.0).is_empty());
+    }
+
+    #[test]
+    fn the_camera_cuts_to_whoever_takes_the_floor() {
+        let turns = [
+            Turn {
+                start: 0.0,
+                end: 10.0,
+                speaker: 0,
+            },
+            Turn {
+                start: 10.0,
+                end: 20.0,
+                speaker: 1,
+            },
+        ];
+        let samples = two_speakers(&turns, 20.0);
+        let path = follow_speaking(&samples, sense(), &turns, 6.0);
+        // On the left-hand speaker while they hold the floor.
+        assert!((path[30].0 - 0.25).abs() < 0.01, "{:?}", path[30]);
+        // And on the right-hand one within a sample of the handover - a
+        // cut, because gliding across the frame for a change of speaker
+        // looks like the camera lost them.
+        let handover = (10.0 * 6.0) as usize;
+        assert!(
+            (path[handover].0 - 0.75).abs() < 0.01,
+            "still at {:?} after the handover",
+            path[handover]
+        );
+        // Two shots, not a drift between them.
+        let moves = path
+            .windows(2)
+            .filter(|pair| (pair[1].0 - pair[0].0).abs() > 1e-9)
+            .count();
+        assert!(moves <= 2, "the camera moved {moves} times, not once");
+    }
+
+    #[test]
+    fn a_two_second_interjection_does_not_move_the_camera() {
+        // The diarizer marks every "mhm". Cutting away for one and back is
+        // the twitch that makes an automatic edit obvious.
+        let turns = [
+            Turn {
+                start: 0.0,
+                end: 8.0,
+                speaker: 0,
+            },
+            Turn {
+                start: 8.0,
+                end: 8.4,
+                speaker: 1,
+            },
+            Turn {
+                start: 8.4,
+                end: 16.0,
+                speaker: 0,
+            },
+        ];
+        let samples = two_speakers(&turns, 16.0);
+        let path = follow_speaking(&samples, sense(), &turns, 6.0);
+        for (i, p) in path.iter().enumerate() {
+            assert!(
+                (p.0 - 0.25).abs() < 0.01,
+                "sample {i} left the speaker for {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn without_audio_it_behaves_exactly_as_before() {
+        let turns = [
+            Turn {
+                start: 0.0,
+                end: 10.0,
+                speaker: 0,
+            },
+            Turn {
+                start: 10.0,
+                end: 20.0,
+                speaker: 1,
+            },
+        ];
+        let samples = two_speakers(&turns, 20.0);
+        assert_eq!(
+            follow_speaking(&samples, sense(), &[], 6.0),
+            follow(&samples, sense())
+        );
     }
 
     #[test]
