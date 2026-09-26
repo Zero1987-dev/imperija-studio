@@ -3,6 +3,8 @@
 
 //! Speech in and out, entirely on this machine.
 //!
+//! - [`diarize`] - pyannote and CAM++, through sherpa-onnx, say who spoke
+//!   when so a reframe can put the camera on whoever has the floor.
 //! - [`transcribe`] - whisper.cpp, in-process, turns a clip's audio into
 //!   timed caption segments.
 //! - [`tts`] - Kokoro, through sherpa-onnx, turns typed narration into a
@@ -19,6 +21,7 @@
 
 #[cfg(feature = "chatterbox")]
 pub mod chatterbox;
+pub mod diarize;
 pub mod transcribe;
 pub mod tts;
 

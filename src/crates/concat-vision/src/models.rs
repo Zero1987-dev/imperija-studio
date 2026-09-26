@@ -41,6 +41,15 @@ pub enum ModelId {
     /// fast enough on a processor alone, which is what reframing needs -
     /// it reads a whole clip through before the first frame is shown.
     Face,
+    /// pyannote's segmentation network: which parts of a recording are
+    /// speech, and where one person stops and another starts. Half of
+    /// telling a podcast's two voices apart; [`ModelId::Voiceprint`] is
+    /// the other half.
+    Speakers,
+    /// 3D-Speaker's CAM++: a voice into the numbers that identify it, so
+    /// that the stretches [`ModelId::Speakers`] cut out can be gathered
+    /// into one pile per person.
+    Voiceprint,
 }
 
 /// One model as the table describes it.
@@ -64,7 +73,7 @@ pub struct ModelSpec {
 }
 
 /// Every downloadable model.
-pub const MODELS: [ModelSpec; 6] = [
+pub const MODELS: [ModelSpec; 8] = [
     ModelSpec {
         id: ModelId::Person,
         file: "rvm-mobilenetv3.onnx",
@@ -116,6 +125,25 @@ pub const MODELS: [ModelSpec; 6] = [
         sha256: "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
         licence: "MIT",
     },
+    ModelSpec {
+        id: ModelId::Speakers,
+        file: "pyannote-segmentation-3-0.onnx",
+        // The sherpa-onnx conversion rather than pyannote's own weights:
+        // the original is a PyTorch checkpoint behind a form, this is the
+        // same network as ONNX and behind nothing. MIT either way.
+        upstream: "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/9403a6902bb58e3d5ae8c7e77c3422de279db2e0/model.onnx",
+        bytes: 5_992_913,
+        sha256: "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
+        licence: "MIT",
+    },
+    ModelSpec {
+        id: ModelId::Voiceprint,
+        file: "campplus-sv-zh-en-16k.onnx",
+        upstream: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+        bytes: 28_281_164,
+        sha256: "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2",
+        licence: "Apache-2.0",
+    },
 ];
 
 impl ModelId {
@@ -136,6 +164,8 @@ impl ModelId {
             ModelId::BrushDecoder => "slimsam-77-decoder",
             ModelId::Enhance => "realesr-general-x4v3",
             ModelId::Face => "yunet-2023mar",
+            ModelId::Speakers => "pyannote-segmentation-3-0",
+            ModelId::Voiceprint => "campplus-sv-zh-en-16k",
         }
     }
 }

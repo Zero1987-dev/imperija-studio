@@ -4849,6 +4849,10 @@ impl Studio {
             duration: (clip.duration * clip.speed.max(0.01)).max(0.0),
             source_aspect: f64::from(width) / f64::from(height),
             frame_aspect: f64::from(video.width) / f64::from(video.height),
+            // Filled in on the worker, below: hearing the voices apart is
+            // a download and a read of the audio, neither of which belongs
+            // on the thread drawing the window.
+            turns: Vec::new(),
         };
         let clip_id = clip.id.clone();
         self.reframe_jobs.insert(clip_id.clone(), (false, 0.0));
@@ -4858,9 +4862,10 @@ impl Studio {
         let epoch = crate::host::project_epoch();
         spawn_in_project(
             move || {
+                let mut request = request;
                 let mut last = (false, -1.0f32);
                 let reporting = clip_id.clone();
-                let result = reframers.reframe(&request, &mut |progress| {
+                let mut report = |progress: concat_host::reframe::Progress| {
                     let now = match progress {
                         concat_host::reframe::Progress::Fetching { received, total } => {
                             (true, received as f32 / total.max(1) as f32)
@@ -4876,7 +4881,39 @@ impl Studio {
                             }
                         });
                     }
-                });
+                };
+
+                // Who has the floor, from the audio. Every part of this is
+                // allowed to fail quietly: no network for the models, no
+                // audio track, one speaker, nothing recognisable as speech.
+                // The camera then follows the largest face, which is what
+                // it did before any of this existed, and a clip still gets
+                // reframed rather than refused.
+                let (path, start, seconds) =
+                    (request.media_path.clone(), request.start, request.duration);
+                let carry_on = std::sync::atomic::AtomicBool::new(false);
+                request.turns = reframers
+                    .speaker_models(&carry_on, &mut report)
+                    .and_then(|(segmentation, voiceprint)| {
+                        concat_speech::diarize::turns(
+                            &path,
+                            start,
+                            seconds,
+                            None,
+                            &segmentation,
+                            &voiceprint,
+                        )
+                    })
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|turn| concat_vision::reframe::Turn {
+                        start: turn.start,
+                        end: turn.end,
+                        speaker: turn.speaker,
+                    })
+                    .collect();
+
+                let result = reframers.reframe(&request, &mut report);
                 (clip_id, result)
             },
             |studio, _, _, (clip_id, result)| {

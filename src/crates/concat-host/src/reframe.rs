@@ -60,6 +60,15 @@ pub struct ReframeRequest {
     pub source_aspect: f64,
     /// The shape being exported to, width over height - 0.5625 for 9:16.
     pub frame_aspect: f64,
+    /// Who was speaking and when, in seconds from the clip's own start.
+    ///
+    /// Empty is the ordinary case and means the camera falls back to
+    /// following whoever's face is largest. Filled in by the caller rather
+    /// than worked out here: hearing voices apart needs sherpa-onnx, which
+    /// is deliberately not a dependency of this crate, so the window asks
+    /// `concat_speech::diarize` and hands the answer over. Getting the two
+    /// models it needs is [`Reframers::speaker_models`].
+    pub turns: Vec<reframe::Turn>,
 }
 
 /// One key the window applies: where in the clip, and the camera there.
@@ -97,6 +106,27 @@ impl Reframers {
     /// Asks the running reframe to stop after the frame in hand.
     pub fn cancel(&self) {
         self.gate.cancel();
+    }
+
+    /// The two networks that say who is speaking, fetched on first use and
+    /// left on disk.
+    ///
+    /// Not loaded here, only downloaded: they are run through sherpa-onnx,
+    /// which this crate does not link. The caller loads them.
+    pub fn speaker_models(
+        &self,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(Progress),
+    ) -> Result<(PathBuf, PathBuf), String> {
+        let segmentation = models::model_file(&self.data, ModelId::Speakers);
+        if !models::installed(&self.data, ModelId::Speakers) {
+            fetch(ModelId::Speakers, &segmentation, cancel, progress)?;
+        }
+        let voiceprint = models::model_file(&self.data, ModelId::Voiceprint);
+        if !models::installed(&self.data, ModelId::Voiceprint) {
+            fetch(ModelId::Voiceprint, &voiceprint, cancel, progress)?;
+        }
+        Ok((segmentation, voiceprint))
     }
 
     /// The detector, fetched on first use and kept.
@@ -190,7 +220,10 @@ impl Reframers {
         // The camera judges drift on the exported frame, so it has to know
         // how much of that frame a step in the source crosses.
         let sensitivity = reframe::sensitivity(scale, request.source_aspect, request.frame_aspect);
-        let path = reframe::follow(&seen, sensitivity);
+        // Who has the floor when the audio said so, and whose face is
+        // largest when it did not.
+        let path =
+            reframe::follow_speaking(&seen, sensitivity, &request.turns, f64::from(SAMPLE_RATE));
         // Reduced on the camera's path rather than on the offsets, so the
         // tolerance means the same thing whatever the zoom: a fraction of
         // the source, not of a number that grows with `scale`.
