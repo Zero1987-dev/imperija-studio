@@ -318,6 +318,72 @@ impl Downloads {
         which("ffmpeg").is_some()
     }
 
+    /// The site's own captions for a page, as chunks timed from the start
+    /// of the video.
+    ///
+    /// `json3` and not `srt`: the plain formats carry a time per line,
+    /// this one carries a time per word, which is the whole reason to ask
+    /// the site rather than the sound. Nothing is downloaded but the
+    /// captions themselves.
+    ///
+    /// An empty answer means the video has none in that language - not an
+    /// error, and the caller should offer the transcriber instead.
+    pub fn captions(
+        &self,
+        url: &str,
+        language: &str,
+        progress: &mut dyn FnMut(Progress),
+    ) -> Result<Vec<crate::captions::Chunk>, String> {
+        let job = self.gate.begin("captions")?;
+        let cancel = job.cancel_handle();
+        let tool = self.tool(&cancel, progress)?;
+        let dir = std::env::temp_dir().join(format!("imperija-captions-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)
+            .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
+        let stem = dir.join("subs");
+
+        let out = Command::new(&tool)
+            .arg("--no-playlist")
+            .args(match js_runtime() {
+                Some(runtime) => vec!["--js-runtime".to_owned(), runtime.to_owned()],
+                None => Vec::new(),
+            })
+            // Automatic as well as uploaded: most podcasts have only the
+            // automatic ones, and they are the ones timed per word.
+            .arg("--write-auto-subs")
+            .arg("--write-subs")
+            .args(["--sub-langs", language])
+            .args(["--sub-format", "json3"])
+            .arg("--skip-download")
+            .args(["-o", &stem.to_string_lossy()])
+            .arg(url)
+            .output()
+            .map_err(|error| format!("could not run the downloader: {error}"))?;
+        if !out.status.success() {
+            let said = String::from_utf8_lossy(&out.stderr);
+            log::warn!("captions: {said}");
+        }
+
+        // Whatever landed: yt-dlp names the file after the language it
+        // actually found, which is not always the one asked for.
+        let mut found = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "json3")
+                    && let Ok(text) = std::fs::read_to_string(&path)
+                {
+                    found = crate::captions::words_of_json3(&text);
+                    if !found.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(crate::captions::chunks(&found))
+    }
+
     /// Runs the tool's own updater, which checks the new version itself.
     ///
     /// The pin in [`TOOL_VERSION`] is what a first install is checked
@@ -492,6 +558,9 @@ impl Downloads {
                 .map(|line| line.trim().to_owned());
             return Err(why.unwrap_or_else(|| "the download failed".to_owned()));
         }
+        if let Some(file) = &landed {
+            note_source(file, &request.url, request.section);
+        }
         landed.ok_or_else(|| "the download finished but left no file".to_owned())
     }
 }
@@ -526,6 +595,43 @@ fn which(name: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// Where the note beside a downloaded file lives.
+///
+/// Beside the media and named after it, so moving the project moves both
+/// and a file renamed by hand simply loses its note rather than picking
+/// up someone else's.
+pub fn note_beside(media: &Path) -> PathBuf {
+    let mut name = media.file_name().unwrap_or_default().to_os_string();
+    name.push(".imperija.json");
+    media.with_file_name(name)
+}
+
+/// Remembers where a file came from: the page, and the stretch taken.
+///
+/// Captions are timed to the whole video while a downloaded stretch
+/// starts at zero in its own file, so without the offset every caption
+/// would be three quarters of an hour late. Best-effort: a note that
+/// cannot be written only means captions have to come from the sound.
+pub fn note_source(media: &Path, url: &str, section: Option<(f64, f64)>) {
+    let (from, to) = section.unwrap_or((0.0, 0.0));
+    let json = serde_json::json!({ "url": url, "from": from, "to": to });
+    let _ = std::fs::write(note_beside(media), json.to_string());
+}
+
+/// What a file came from, if anything was noted: the page and the stretch.
+pub fn source_of(media: &Path) -> Option<(String, f64, f64)> {
+    let text = std::fs::read_to_string(note_beside(media)).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let url = json["url"].as_str()?.to_owned();
+    (!url.is_empty()).then(|| {
+        (
+            url,
+            json["from"].as_f64().unwrap_or(0.0),
+            json["to"].as_f64().unwrap_or(0.0),
+        )
+    })
+}
+
 /// The percentage out of a yt-dlp progress line, as `0..=1`.
 ///
 /// The line reads `[download]  45.2% of 12.34MiB at ...`; anything else,
@@ -540,6 +646,32 @@ pub fn percent_of(line: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_note_sits_beside_the_file_and_keeps_its_name() {
+        let note = note_beside(Path::new("/x/My Clip [abc].mp4"));
+        assert_eq!(note, Path::new("/x/My Clip [abc].mp4.imperija.json"));
+        // Two files in one folder never share a note.
+        assert_ne!(note, note_beside(Path::new("/x/Other.mp4")));
+    }
+
+    #[test]
+    fn a_source_written_is_a_source_read_back() {
+        let dir = std::env::temp_dir().join(format!("note-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp folder");
+        let media = dir.join("clip.mp4");
+        note_source(&media, "https://youtu.be/abc", Some((344.0, 418.0)));
+        assert_eq!(
+            source_of(&media),
+            Some(("https://youtu.be/abc".to_owned(), 344.0, 418.0))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_with_no_note_simply_has_no_source() {
+        assert_eq!(source_of(Path::new("/x/never-downloaded-3f9c.mp4")), None);
+    }
 
     #[test]
     fn a_time_reads_in_all_three_forms_a_person_writes() {
