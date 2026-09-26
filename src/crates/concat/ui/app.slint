@@ -263,6 +263,7 @@ export component App inherits Window {
     callback downloader-to-folder-changed(on: bool);
     callback downloader-folder-edited(text: string);
     callback downloader-browse();
+    callback downloader-tidy-end-changed(on: bool);
     callback downloader-from-edited(text: string);
     callback downloader-to-edited(text: string);
 
@@ -643,6 +644,7 @@ export component App inherits Window {
         to-folder-changed(on) => { root.downloader-to-folder-changed(on); }
         folder-changed(text) => { root.downloader-folder-edited(text); }
         browse => { root.downloader-browse(); }
+        tidy-end-changed(on) => { root.downloader-tidy-end-changed(on); }
         from-changed(text) => { root.downloader-from-edited(text); }
         to-changed(text) => { root.downloader-to-edited(text); }
     }

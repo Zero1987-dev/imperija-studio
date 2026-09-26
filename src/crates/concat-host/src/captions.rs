@@ -134,6 +134,51 @@ pub fn chunks(words: &[Word]) -> Vec<Chunk> {
     out
 }
 
+/// How much of a silence to keep after the last word, so it finishes
+/// rather than being clipped on its final sound.
+pub const SETTLE: f64 = 0.35;
+
+/// The furthest a clip's end is allowed to move on to find a pause.
+///
+/// Four seconds is a sentence's tail. Past that the clip is no longer the
+/// one that was asked for, and a person who typed an end meant it.
+pub const REACH: f64 = 4.0;
+
+/// The end moved on to the next pause in the speech.
+///
+/// A clip cut at the second someone typed stops mid-word, which is the
+/// one thing that makes a clip look unfinished however good the rest of
+/// it is. The words carry their own times, so the silences are known: this
+/// finds the first one at or after `wanted` and ends there instead.
+///
+/// `wanted` is returned unchanged when there is no pause within [`REACH`],
+/// when the speech runs on without one, or when there are no words at all.
+/// Moving a clip's end is a small liberty; moving it far is not.
+pub fn ends_at(words: &[Word], wanted: f64, reach: f64) -> f64 {
+    for pair in words.windows(2) {
+        let (word, next) = (&pair[0], &pair[1]);
+        let gap = next.at - word.at;
+        if gap <= PAUSE {
+            continue;
+        }
+        // Just past the last word before the silence, not into it.
+        let settled = word.at + gap.min(SETTLE);
+        if settled >= wanted {
+            return if settled <= wanted + reach {
+                settled
+            } else {
+                wanted
+            };
+        }
+    }
+    // Past the last word: nothing is said after `wanted`, so there is
+    // nothing to be cut off mid-way.
+    match words.last() {
+        Some(last) if last.at >= wanted && last.at + SETTLE <= wanted + reach => last.at + SETTLE,
+        _ => wanted,
+    }
+}
+
 /// The captions that fall inside a stretch of the video, with their times
 /// moved to start from zero.
 ///
@@ -280,6 +325,60 @@ mod tests {
     #[test]
     fn no_words_is_no_captions() {
         assert!(chunks(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_end_moves_on_to_the_next_silence() {
+        // Speech, then a gap after "three", then more.
+        let words = say(&[
+            (0.0, "one"),
+            (0.3, "two"),
+            (0.6, "three"),
+            (2.0, "four"),
+            (2.3, "five"),
+        ]);
+        // Asked to end at 1.0, mid-silence-ward: ends just after "three".
+        let end = ends_at(&words, 1.0, REACH);
+        assert!((end - (0.6 + SETTLE)).abs() < 1e-9, "{end}");
+    }
+
+    #[test]
+    fn an_end_already_at_a_silence_is_left_alone() {
+        let words = say(&[(0.0, "one"), (2.0, "two")]);
+        let end = ends_at(&words, 0.1, REACH);
+        assert!((end - (0.0 + SETTLE)).abs() < 1e-9, "{end}");
+    }
+
+    #[test]
+    fn speech_that_runs_on_keeps_the_end_that_was_asked_for() {
+        // No gap longer than a breath anywhere, and the last word is far
+        // past the wanted end.
+        let words: Vec<Word> = (0..100)
+            .map(|i| Word {
+                at: f64::from(i) * 0.2,
+                text: "on".to_owned(),
+            })
+            .collect();
+        assert!((ends_at(&words, 5.0, REACH) - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_pause_too_far_away_does_not_drag_the_end_to_it() {
+        // The only silence is twenty seconds past the wanted end.
+        let words = say(&[(0.0, "a"), (20.0, "b")]);
+        assert!((ends_at(&words, 1.0, 0.5) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn no_words_means_the_end_stands() {
+        assert!((ends_at(&[], 7.0, REACH) - 7.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn silence_after_the_last_word_ends_just_after_it() {
+        let words = say(&[(0.0, "a"), (1.0, "done.")]);
+        let end = ends_at(&words, 1.2, REACH);
+        assert!((end - (1.0 + SETTLE)).abs() < 1e-9, "{end}");
     }
 
     #[test]

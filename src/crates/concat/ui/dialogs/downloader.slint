@@ -41,6 +41,8 @@ export struct DownloaderSheetData {
     to: string,
     /// ffmpeg is here, so a stretch can be cut.
     can-cut: bool,
+    /// The end may run on to the next pause in the speech.
+    tidy-end: bool,
     running: bool,
     /// The tool itself is still coming down, not the video.
     fetching-tool: bool,
@@ -57,6 +59,7 @@ export component DownloaderDialog inherits Modal {
     callback quality-changed(index: int);
     callback fps-changed(index: int);
     callback wanted-changed(index: int);
+    callback tidy-end-changed(on: bool);
     callback from-changed(text: string);
     callback to-changed(text: string);
     callback to-folder-changed(on: bool);
@@ -178,6 +181,18 @@ export component DownloaderDialog inherits Modal {
                     technical: true;
                     placeholder: I18n.t("end");
                     edited(text) => { root.to-changed(text); }
+                }
+            }
+
+            // A clip cut on the second someone typed stops mid-word, and
+            // that alone makes it look unfinished. The words carry their
+            // own times, so the silences are known before anything is
+            // fetched.
+            DialogRow {
+                label: I18n.t("Finish on a pause");
+                Switch {
+                    checked: root.data.tidy-end;
+                    toggled(on) => { root.tidy-end-changed(on); }
                 }
             }
 

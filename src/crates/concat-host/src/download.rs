@@ -352,6 +352,22 @@ impl Downloads {
         language: &str,
         progress: &mut dyn FnMut(Progress),
     ) -> Result<Vec<crate::captions::Chunk>, String> {
+        Ok(crate::captions::chunks(
+            &self.caption_words(url, language, progress)?,
+        ))
+    }
+
+    /// The same, as the words themselves.
+    ///
+    /// Wanted before a download as well as after one: where the silences
+    /// are decides where a clip can end without cutting a word in half,
+    /// and that has to be known before the stretch is asked for.
+    pub fn caption_words(
+        &self,
+        url: &str,
+        language: &str,
+        progress: &mut dyn FnMut(Progress),
+    ) -> Result<Vec<crate::captions::Word>, String> {
         let job = self.gate.begin("captions")?;
         let cancel = job.cancel_handle();
         let tool = self.tool(&cancel, progress)?;
@@ -399,7 +415,7 @@ impl Downloads {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
-        Ok(crate::captions::chunks(&found))
+        Ok(found)
     }
 
     /// Runs the tool's own updater, which checks the new version itself.

@@ -1339,6 +1339,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_downloader_browse(on_window!(|state| {
         state.downloader_browse();
     }));
+    app.on_downloader_tidy_end_changed(on_window!(|state, on: bool| {
+        state.downloader_tidy(on);
+    }));
     app.on_downloader_from_edited(on_window!(|state, text: SharedString| {
         state.downloader_edge("from", text.as_str());
     }));

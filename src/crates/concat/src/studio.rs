@@ -1475,7 +1475,10 @@ impl Studio {
             cutout_jobs: HashMap::new(),
             enhance_jobs: HashMap::new(),
             reframe_jobs: HashMap::new(),
-            downloader: DownloaderSheet::default(),
+            downloader: DownloaderSheet {
+                tidy_end: true,
+                ..DownloaderSheet::default()
+            },
             region_job: None,
             pending_stroke: None,
             host,
@@ -4928,6 +4931,11 @@ impl Studio {
         self.downloader.folder = folder.to_owned();
     }
 
+    /// The "finish on a pause" switch was moved.
+    pub fn downloader_tidy(&mut self, on: bool) {
+        self.downloader.tidy_end = on;
+    }
+
     /// One end of the stretch was typed into.
     pub fn downloader_edge(&mut self, which: &str, text: &str) {
         match which {
@@ -5005,9 +5013,32 @@ impl Studio {
         self.downloader.progress = 0.0;
 
         let downloads = Arc::clone(&self.host.downloads);
+        let tidy = self.downloader.tidy_end;
         let epoch = crate::host::project_epoch();
         spawn_in_project(
             move || -> Result<concat_host::media::MediaSummary, String> {
+                let mut request = request;
+                // Where the silences are has to be known before the stretch
+                // is asked for, so the words come first. Best-effort: a
+                // video with no captions simply keeps the end that was
+                // typed, which is what happened before this existed.
+                if tidy && let Some((from, to)) = request.section {
+                    match downloads.caption_words(&request.url, "en", &mut |_| {}) {
+                        Ok(words) if !words.is_empty() => {
+                            let ended = concat_host::captions::ends_at(
+                                &words,
+                                to,
+                                concat_host::captions::REACH,
+                            );
+                            if ended > to {
+                                log::info!("download: end moved {:.1}s to a pause", ended - to);
+                                request.section = Some((from, ended));
+                            }
+                        }
+                        Ok(_) => log::info!("download: no captions, the end stands"),
+                        Err(error) => log::warn!("download: captions: {error}"),
+                    }
+                }
                 let mut last = (false, -1.0f32);
                 let file = downloads.fetch(&request, &mut |progress| {
                     let now = match progress {
@@ -7554,6 +7585,7 @@ impl Studio {
             from: self.downloader.from.as_str().into(),
             to: self.downloader.to.as_str().into(),
             can_cut: self.host.downloads.can_cut(),
+            tidy_end: self.downloader.tidy_end,
         });
         let voices = installed(&self.settings.voices);
         sync(
@@ -8395,6 +8427,10 @@ pub struct DownloaderSheet {
     pub from: String,
     /// The end of that stretch.
     pub to: String,
+    /// Let the end run on to the next pause in the speech rather than
+    /// stopping on the second typed. On by default: a clip cut mid-word
+    /// looks unfinished however good the rest of it is.
+    pub tidy_end: bool,
 }
 
 impl DownloaderSheet {
