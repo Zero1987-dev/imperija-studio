@@ -76,9 +76,10 @@ export component TextPanel inherits VerticalLayout {
         root.weight-index = root.selected.font-weight >= 700 ? 3
             : root.selected.font-weight >= 600 ? 2
             : root.selected.font-weight >= 500 ? 1 : 0;
-        // One bundled face; a title from an older document that named a
-        // retired one is painted in it too, so it is that row as well.
-        root.family-index = 0;
+        // The face the clip is actually set in. Pinned at nought while
+        // there was only ever one face to show, which left the menu saying
+        // the first name whatever had been chosen.
+        root.family-index = root.selected.font-index;
     }
 
     init => { root.seed(); }
@@ -168,7 +169,10 @@ export component TextPanel inherits VerticalLayout {
         typography := SectionHeader {
             title: I18n.t("Typography");
             collapsible: true;
-            summary: root.selected.font-family + " · "
+            // "×5" when a run of captions is selected, so it is plain that
+            // a dial here moves all of them and not the one being shown.
+            summary: (root.selected.count > 1 ? "×\{root.selected.count} · " : "")
+                + root.selected.font-family + " · "
                 + InspectorFmt.format(ParamFormat.height, root.size) + " · "
                 + root.selected.fill-hex;
         }

@@ -3446,11 +3446,73 @@ impl Studio {
 
     /// One field of the selected clip, on the echo. `clip_commit` turns the
     /// accumulated edits into commands.
+    /// Every selected clip that carries words, in selection order.
+    ///
+    /// Captions arrive as fifty clips at once and nobody is going to set
+    /// the face on fifty clips one at a time, so the text panel works on
+    /// all of them together.
+    fn text_selection(&self) -> Vec<String> {
+        self.selection
+            .iter()
+            .filter(|id| {
+                self.clip(id.as_str())
+                    .is_some_and(|clip| clip.kind == model::ClipKind::Text)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Whether this dial belongs to the text panel, and so goes to every
+    /// selected title rather than to one.
+    ///
+    /// The two offsets are deliberately not here. They move any clip, not
+    /// only a title, and a drag in the Adjust panel meaning "move all of
+    /// them" is a different promise from the one this makes.
+    fn is_text_field(field: ClipField) -> bool {
+        matches!(
+            field,
+            ClipField::FontSize
+                | ClipField::FontWeight
+                | ClipField::Italic
+                | ClipField::LineHeight
+                | ClipField::Tracking
+                | ClipField::Align
+                | ClipField::Shadow
+                | ClipField::StrokeWidth
+                | ClipField::StrokeOpacity
+                | ClipField::TextOpacity
+                | ClipField::TextWidth
+                | ClipField::TextHeight
+        )
+    }
+
+    /// Which clips one dial writes to: every selected title for the text
+    /// panel's dials, and otherwise the one clip the inspector has always
+    /// worked on.
+    fn editing_for(&self, field: ClipField) -> Vec<String> {
+        if Self::is_text_field(field) {
+            let words = self.text_selection();
+            if !words.is_empty() {
+                return words;
+            }
+        }
+        self.sole_selection().into_iter().collect()
+    }
+
     pub fn clip_set(&mut self, field: ClipField, value: f32) {
-        let Some(id) = self.sole_selection() else {
+        let ids = self.editing_for(field);
+        let Some(first) = ids.first().cloned() else {
             return;
         };
-        self.commit_target = Some(id.clone());
+        self.commit_target = Some(first);
+        for id in &ids {
+            self.clip_set_on(id, field, value);
+        }
+    }
+
+    /// One clip's worth of [`Self::clip_set`].
+    fn clip_set_on(&mut self, id: &str, field: ClipField, value: f32) {
+        let id = id.to_owned();
         // The media's tracks, read before the echo is borrowed: a row of
         // the Audio panel's list is a stream index of the file.
         let audio_tracks: Vec<u32> = if field == ClipField::AudioTrack {
@@ -3604,30 +3666,45 @@ impl Studio {
     }
 
     pub fn clip_set_text(&mut self, field: ClipTextField, value: &str) {
-        let Some(id) = self.sole_selection() else {
-            return;
-        };
-        self.commit_target = Some(id.clone());
-        self.begin_echo();
-        let Some(clip) = self.echo_clip_mut(&id) else {
-            return;
-        };
-        if clip.kind != model::ClipKind::Text {
-            return;
-        }
-        let text = clip.text.get_or_insert_with(TextStyle::default);
-        match field {
-            ClipTextField::Content => {
-                text.content = value.to_owned();
-                let first = value.lines().next().unwrap_or("").trim().to_owned();
-                clip.name = if first.is_empty() {
-                    "Title".into()
-                } else {
-                    first
-                };
+        // The words themselves belong to one clip - setting fifty captions
+        // to the same sentence is nobody's intention - but the face they
+        // are set in goes to all of them.
+        let ids: Vec<String> = if field == ClipTextField::Content {
+            self.sole_selection().into_iter().collect()
+        } else {
+            let words = self.text_selection();
+            if words.is_empty() {
+                self.sole_selection().into_iter().collect()
+            } else {
+                words
             }
-            ClipTextField::FontFamily => text.font_family = value.to_owned(),
-            _ => {}
+        };
+        let Some(first) = ids.first().cloned() else {
+            return;
+        };
+        self.commit_target = Some(first);
+        self.begin_echo();
+        for id in &ids {
+            let Some(clip) = self.echo_clip_mut(id) else {
+                continue;
+            };
+            if clip.kind != model::ClipKind::Text {
+                continue;
+            }
+            let text = clip.text.get_or_insert_with(TextStyle::default);
+            match field {
+                ClipTextField::Content => {
+                    text.content = value.to_owned();
+                    let first = value.lines().next().unwrap_or("").trim().to_owned();
+                    clip.name = if first.is_empty() {
+                        "Title".into()
+                    } else {
+                        first
+                    };
+                }
+                ClipTextField::FontFamily => text.font_family = value.to_owned(),
+                _ => {}
+            }
         }
         // The words are on the echo now; show them. A title being typed is
         // painted in memory at the monitor's size, the way a grip drag is,
@@ -3645,23 +3722,33 @@ impl Studio {
     }
 
     pub fn clip_set_colour(&mut self, field: ClipTextField, value: slint::Color) {
-        let Some(id) = self.sole_selection() else {
+        let ids = {
+            let words = self.text_selection();
+            if words.is_empty() {
+                self.sole_selection().into_iter().collect()
+            } else {
+                words
+            }
+        };
+        let Some(first) = ids.first().cloned() else {
             return;
         };
-        self.commit_target = Some(id.clone());
+        self.commit_target = Some(first);
         self.begin_echo();
-        let Some(clip) = self.echo_clip_mut(&id) else {
-            return;
-        };
-        if clip.kind != model::ClipKind::Text {
-            return;
-        }
-        let text = clip.text.get_or_insert_with(TextStyle::default);
-        match field {
-            ClipTextField::Color => text.color = hex_of(value),
-            ClipTextField::StrokeColor => text.stroke_color = hex_rgba(value),
-            ClipTextField::Background => text.background = hex_with_alpha(value),
-            _ => {}
+        for id in &ids {
+            let Some(clip) = self.echo_clip_mut(id) else {
+                continue;
+            };
+            if clip.kind != model::ClipKind::Text {
+                continue;
+            }
+            let text = clip.text.get_or_insert_with(TextStyle::default);
+            match field {
+                ClipTextField::Color => text.color = hex_of(value),
+                ClipTextField::StrokeColor => text.stroke_color = hex_rgba(value),
+                ClipTextField::Background => text.background = hex_with_alpha(value),
+                _ => {}
+            }
         }
     }
 
@@ -7140,10 +7227,15 @@ impl Studio {
             .collect()
     }
 
-    /// The selection, flattened for the inspector: exactly one clip or
-    /// nothing.
+    /// The selection, flattened for the inspector: the first clip of it,
+    /// or nothing.
+    ///
+    /// The first rather than the only, so that selecting a run of captions
+    /// still fills the panel. What the dials then write to is
+    /// [`Self::editing_for`]: the text ones go to every title selected,
+    /// the rest to one.
     fn selected(&self) -> SelectedClipData {
-        let Some(clip) = self.sole_selection().and_then(|id| self.clip(&id)) else {
+        let Some(clip) = self.selection.first().and_then(|id| self.clip(id.as_str())) else {
             return SelectedClipData::default();
         };
         // A keyed property shows what it is worth at the playhead, which is
@@ -7160,6 +7252,11 @@ impl Studio {
         });
         SelectedClipData {
             present: true,
+            count: self.selection.len() as i32,
+            font_index: concat_text::FAMILIES
+                .iter()
+                .position(|family| *family == text.font_family)
+                .unwrap_or(0) as i32,
             frame_width: self.output_size().0 as i32,
             frame_height: self.output_size().1 as i32,
             id: clip.id.as_str().into(),

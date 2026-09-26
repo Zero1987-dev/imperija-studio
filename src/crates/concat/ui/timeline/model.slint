@@ -249,6 +249,12 @@ export enum ClipTextField {
 /// is how a panel ends up showing two clips at once.
 export struct SelectedClipData {
     present: bool,
+    /// how many clips are selected; the inspector shows the first of them
+    /// and the text panel's dials write to all the titles among them
+    count: int,
+    /// which row of `Editor.font-families` this clip's face is, so the
+    /// menu shows the face the clip is actually set in
+    font-index: int,
     id: string,
     /// the output frame's size, so a fraction can be shown in pixels
     frame-width: int,
