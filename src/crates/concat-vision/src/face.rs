@@ -34,15 +34,18 @@ pub const SCORE: f64 = 0.6;
 /// answer for the same face.
 pub const IOU: f64 = 0.3;
 
-/// The model reads a picture this wide. Faces in a podcast are large, so
-/// the detail of a bigger input buys nothing and costs time; this is the
-/// size OpenCV's own example uses.
-pub const INPUT_W: usize = 320;
+/// The model reads a picture this wide, and no other width.
+///
+/// Not a choice: this build of YuNet is exported with its input shape
+/// fixed, and the runtime refuses anything else outright - "Got: 320,
+/// Expected: 640". A smaller input would be quicker and quite enough for
+/// faces the size a podcast frames them, but the model has to be re-
+/// exported to accept one, and a working detector beats a faster refusal.
+pub const INPUT_W: usize = 640;
 
-/// And this tall. The ratio is 4:3 rather than the source's, because the
-/// picture is letterboxed into it - see [`fit`] - and a shape the model
-/// compiles for once is faster than one per clip.
-pub const INPUT_H: usize = 240;
+/// And this tall, for the same reason. Square, so the picture is
+/// letterboxed into it - see [`fit`] - whatever shape it came in.
+pub const INPUT_H: usize = 640;
 
 /// One stride's three answers, as the model laid them out.
 pub struct Level<'a> {
@@ -171,6 +174,11 @@ pub fn nms(mut faces: Vec<Face>, threshold: f64) -> Vec<Face> {
 /// [`INPUT_H`], blue then green then red, 0 to 255, the source letterboxed
 /// into the middle and the bars left black.
 ///
+/// The size has to be exactly the model's own. It is fixed in this export,
+/// and feeding it anything else is refused by the runtime before a single
+/// frame is read - which is how a detector that never ran got as far as a
+/// person clicking the button.
+///
 /// Blue first because that is the order the model was trained in, and
 /// unscaled because YuNet takes raw values rather than the 0 to 1 most
 /// other models want. Sampling is nearest-neighbour: the input is small,
@@ -262,6 +270,22 @@ impl Detector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_grids_are_the_size_the_model_says_they_are() {
+        // Read out of the model file itself: input [1, 3, 640, 640], and
+        // cls_8 / cls_16 / cls_32 of 6400, 1600 and 400 cells. The input
+        // size is fixed in this export, so a mismatch is not a worse
+        // answer - the runtime refuses the frame outright, which is how a
+        // detector that had never run reached a person's finger.
+        assert_eq!((INPUT_W, INPUT_H), (640, 640));
+        for (stride, cells) in [(8, 6400), (16, 1600), (32, 400)] {
+            let cols = INPUT_W / stride;
+            let rows = INPUT_H / stride;
+            assert_eq!(cols * rows, cells, "stride {stride}");
+        }
+        assert_eq!(STRIDES, [8, 16, 32]);
+    }
 
     #[test]
     fn a_wide_picture_gets_bars_above_and_below() {
