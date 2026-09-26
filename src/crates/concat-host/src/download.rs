@@ -178,6 +178,24 @@ pub fn section_of(from: f64, to: f64) -> String {
     format!("*{from}-{to}")
 }
 
+/// The name a download is written under.
+///
+/// The stretch is part of it. Without that, two stretches of one episode
+/// are one name: the tool sees the first file already there, says so, and
+/// hands back the old clip - which is a download that silently returns
+/// somebody else's twenty seconds. Whole seconds, so the name stays
+/// readable and the same stretch asked for twice is the same file.
+pub fn name_template(section: Option<(f64, f64)>) -> String {
+    match section {
+        Some((from, to)) if to > from => format!(
+            "%(title).80B [%(id)s] {}-{}.%(ext)s",
+            from.round() as i64,
+            to.round() as i64
+        ),
+        _ => "%(title).80B [%(id)s].%(ext)s".to_owned(),
+    }
+}
+
 /// What a picture has to be encoded in to be worth editing.
 ///
 /// H.264. Not because it is the best - AV1 is half the size for the same
@@ -416,7 +434,7 @@ impl Downloads {
         let format = format_for(request);
         let template = request
             .into
-            .join("%(title).80B [%(id)s].%(ext)s")
+            .join(name_template(request.section))
             .to_string_lossy()
             .into_owned();
 
@@ -692,6 +710,38 @@ mod tests {
         }
         // Sixty and over is fine as the only number: 75 seconds is a time.
         assert_eq!(seconds_of("75"), Some(75.0));
+    }
+
+    #[test]
+    fn two_stretches_of_one_episode_are_two_files() {
+        // The bug this exists for: without the stretch in the name the
+        // tool finds the first file already there and hands it back, so
+        // asking for five seconds returns the earlier twenty.
+        let first = name_template(Some((2565.0, 2585.0)));
+        let second = name_template(Some((4710.0, 4715.0)));
+        assert_ne!(first, second);
+        assert!(first.contains("2565-2585"), "{first}");
+        assert!(second.contains("4710-4715"), "{second}");
+    }
+
+    #[test]
+    fn the_same_stretch_asked_for_twice_is_the_same_file() {
+        assert_eq!(
+            name_template(Some((10.0, 20.0))),
+            name_template(Some((10.4, 19.6))),
+            "rounded to whole seconds, so it is found rather than fetched again"
+        );
+    }
+
+    #[test]
+    fn a_whole_video_keeps_the_plain_name() {
+        for section in [None, Some((5.0, 5.0)), Some((20.0, 5.0))] {
+            assert_eq!(
+                name_template(section),
+                "%(title).80B [%(id)s].%(ext)s",
+                "{section:?}"
+            );
+        }
     }
 
     #[test]

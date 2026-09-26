@@ -292,7 +292,14 @@ export component CaptionsDialog inherits Modal {
                 large: true;
                 glyph: Glyph.text-mark;
                 label: root.from-sound ? I18n.t("Generate captions") : I18n.t("Add captions");
-                enabled: root.from-sound ? root.data.ready : root.draft != "";
+                // Reading the site's own captions needs no transcriber, so
+                // the model requirement must not hold the button there -
+                // which it did, leaving nothing to press.
+                enabled: !root.from-sound
+                    ? root.draft != ""
+                    : (root.data.from-site && root.data.source == 0)
+                        ? true
+                        : root.data.ready;
                 clicked => { root.begin(); }
             }
         }
