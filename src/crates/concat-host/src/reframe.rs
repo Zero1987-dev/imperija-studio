@@ -138,7 +138,7 @@ impl Reframers {
         progress(Progress::Analysing(0.0));
 
         // Decoded at the model's own input width: the detector letterboxes
-        // into 320 x 240 regardless, so anything larger is read and thrown
+        // into 640 x 640 regardless, so anything larger is read and thrown
         // away. The aspect is the source's, and `fit` puts the bars in.
         let options = DecodeOptions::default()
             .starting_at(Rational::new((request.start * 1000.0) as i64, 1000))
@@ -178,8 +178,19 @@ impl Reframers {
             return Ok(Vec::new());
         }
 
-        let path = reframe::follow(&seen);
-        let scale = reframe::cover_scale(request.source_aspect, request.frame_aspect);
+        // How far in to go, from how big the face actually is. Merely
+        // covering the frame is the widest legal shot and leaves a podcast
+        // face tiny in a tall picture, which is what makes an automatic
+        // reframe look like a crop rather than a shot.
+        let scale = reframe::framing(
+            reframe::subject_height(&seen),
+            request.source_aspect,
+            request.frame_aspect,
+        );
+        // The camera judges drift on the exported frame, so it has to know
+        // how much of that frame a step in the source crosses.
+        let sensitivity = reframe::sensitivity(scale, request.source_aspect, request.frame_aspect);
+        let path = reframe::follow(&seen, sensitivity);
         // Reduced on the camera's path rather than on the offsets, so the
         // tolerance means the same thing whatever the zoom: a fraction of
         // the source, not of a number that grows with `scale`.
@@ -192,9 +203,10 @@ impl Reframers {
                 } else {
                     i as f64 / last as f64
                 },
-                shot: reframe::shot_for(
+                shot: reframe::shot_placing(
                     path[i].0,
                     path[i].1,
+                    (0.5, reframe::HEADROOM),
                     scale,
                     request.source_aspect,
                     request.frame_aspect,
