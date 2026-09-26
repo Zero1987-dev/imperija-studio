@@ -25,6 +25,11 @@ export struct CaptionsSheetData {
     open: bool,
     /// The selected clip has sound, and the sheet transcribes it.
     from-sound: bool,
+    /// The clip was downloaded here, so the site's own captions can be
+    /// read instead of listening to the sound.
+    from-site: bool,
+    /// 0 the site, 1 the transcriber.
+    source: int,
     /// For the header's note: the clip being transcribed, or where a
     /// script's captions land.
     subject: string,
@@ -51,6 +56,7 @@ export component CaptionsDialog inherits Modal {
 
     callback text-edited(text: string);
     callback model-changed(index: int);
+    callback source-changed(index: int);
     callback placement-changed(index: int);
     callback size-changed(index: int);
     callback begin();
@@ -81,8 +87,33 @@ export component CaptionsDialog inherits Modal {
     init => { root.draft = root.data.text; }
 
     VerticalLayout {
-        if !root.data.running && root.from-sound: DialogSection {
+        // Where the words come from. Only a question when the clip was
+        // downloaded here: the site wrote its captions when it made them,
+        // word by word, and reading them is seconds against the
+        // transcriber's minutes. Shown before the transcriber's own row,
+        // because it decides whether that row matters at all.
+        if !root.data.running && root.from-sound && root.data.from-site: DialogSection {
             first: true;
+            title: I18n.t("Words from");
+
+            SegmentedControl {
+                options: [I18n.t("The site"), I18n.t("The sound")];
+                current: root.data.source;
+                changed(index) => { root.source-changed(index); }
+            }
+
+            Text {
+                text: root.data.source == 0
+                    ? I18n.t("Read from the page this clip came from: a couple of seconds, timed word by word.")
+                    : I18n.t("Listened to by the transcriber: slower, but works on any file.");
+                color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+        }
+
+        if !root.data.running && root.from-sound && !(root.data.from-site && root.data.source == 0): DialogSection {
+            first: !root.data.from-site;
             title: I18n.t("Transcriber");
 
             DialogRow {

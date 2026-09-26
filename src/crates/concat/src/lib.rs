@@ -1294,6 +1294,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_captions_model_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Captions(CaptionsMsg::ModelChanged(index)));
     }));
+    app.on_captions_source_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Captions(CaptionsMsg::SourceChanged(index)));
+    }));
     app.on_captions_placement_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Captions(CaptionsMsg::PlacementChanged(index)));
     }));

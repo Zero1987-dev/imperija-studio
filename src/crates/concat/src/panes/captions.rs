@@ -50,6 +50,8 @@ pub enum CaptionsMsg {
     Progress(i32),
     /// The transcriber's worker is done: what was said, or why not.
     Finished(Result<Vec<Segment>, String>),
+    /// The words' source was changed: 0 the site, 1 the transcriber.
+    SourceChanged(i32),
 }
 
 /// The clip a transcription is running over, as the finished segments
@@ -73,6 +75,11 @@ pub struct CaptionsPane {
     pub text: String,
     /// Row in the installed transcriber list.
     pub model: usize,
+    /// Where the words come from: 0 the site the clip was downloaded
+    /// from, 1 the transcriber. Only offered when the clip carries a note
+    /// saying where it came from; otherwise the transcriber is all there
+    /// is and the choice is not shown.
+    pub source: usize,
     /// 0 bottom, 1 centre, 2 top.
     pub placement: usize,
     /// 0 small, 1 medium, 2 large.
@@ -114,11 +121,14 @@ impl CaptionsPane {
                 self.placement = (index.max(0) as usize).min(2);
             }
             CaptionsMsg::SizeChanged(index) => self.size = (index.max(0) as usize).min(2),
+            CaptionsMsg::SourceChanged(index) => self.source = (index.max(0) as usize).min(1),
             CaptionsMsg::Begin => {
-                if self.clip.is_some() {
-                    self.run_sound(studio);
-                } else {
+                if self.clip.is_none() {
                     self.run_script(studio);
+                } else if self.source == 0 && self.downloaded(studio).is_some() {
+                    self.run_site(studio);
+                } else {
+                    self.run_sound(studio);
                 }
             }
             CaptionsMsg::Cancel => {
@@ -202,6 +212,67 @@ impl CaptionsPane {
 
     /// The sheet's clip through the transcriber on a worker, reporting into
     /// the sheet as it goes.
+    /// Where the selected clip's file came from, when it was downloaded
+    /// here: the page, and the stretch of it the file holds.
+    fn downloaded(&self, studio: &Studio) -> Option<(String, f64, f64)> {
+        let clip = self.clip.as_ref().and_then(|id| studio.clip(id))?;
+        let media = studio.project().media_by_id(&clip.media_id)?;
+        concat_host::download::source_of(std::path::Path::new(&media.path))
+    }
+
+    /// Captions from the site the clip was downloaded from.
+    ///
+    /// The site timed them per word when it made them, so this is a couple
+    /// of seconds and a download of a few hundred kilobytes against the
+    /// transcriber's model and minutes of a processor. The answer is
+    /// handed to the same [`CaptionsMsg::Finished`] the transcriber ends
+    /// with, so everything downstream - the lines, the look, the undo
+    /// step - is the one path.
+    fn run_site(&mut self, studio: &mut Studio) {
+        let Some(clip) = self.clip.as_ref().and_then(|id| studio.clip(id)).cloned() else {
+            self.message = t("The clip is no longer on the timeline");
+            return;
+        };
+        let Some((url, from, _)) = self.downloaded(studio) else {
+            self.message = t("This clip was not downloaded here");
+            return;
+        };
+        // The file starts where the download started; the clip uses a
+        // stretch of the file; the captions are timed to the whole video.
+        // These two put all three on the same clock.
+        let window_from = from + clip.source_start;
+        let window_to = window_from + clip.duration * clip.speed;
+
+        let downloads = Arc::clone(&studio.host.downloads);
+        self.subject = Some(Subject {
+            start: clip.start,
+            speed: clip.speed,
+            look: self.look(),
+        });
+        self.running = true;
+        self.progress = 0.0;
+        self.message.clear();
+        spawn_in_project(
+            move || -> Result<Vec<Segment>, String> {
+                let chunks = downloads.captions(&url, "en", &mut |_| {})?;
+                if chunks.is_empty() {
+                    return Err("this video has no captions to read".to_owned());
+                }
+                Ok(
+                    concat_host::captions::within(&chunks, window_from, window_to)
+                        .into_iter()
+                        .map(|c| Segment {
+                            start: c.start,
+                            end: c.end,
+                            text: c.text,
+                        })
+                        .collect(),
+                )
+            },
+            |studio, _, _, result| studio.handle(Msg::Captions(CaptionsMsg::Finished(result))),
+        );
+    }
+
     fn run_sound(&mut self, studio: &mut Studio) {
         let Some(clip) = self.clip.as_ref().and_then(|id| studio.clip(id)).cloned() else {
             self.message = t("The clip is no longer on the timeline");
@@ -253,6 +324,8 @@ impl CaptionsPane {
         CaptionsSheetData {
             open: self.open,
             from_sound: self.clip.is_some(),
+            from_site: self.downloaded(studio).is_some(),
+            source: self.source as i32,
             subject: self
                 .clip
                 .as_ref()
