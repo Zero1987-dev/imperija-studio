@@ -94,10 +94,12 @@ pub fn turns(
             model: Some(voiceprint.to_string_lossy().into_owned()),
             ..Default::default()
         },
+        // Both of its fields, so no update syntax: this is pinned to
+        // sherpa-onnx 1.13.7, where clustering is told how many voices to
+        // look for and how near is near enough, and nothing else.
         clustering: FastClusteringConfig {
             num_clusters: HOW_MANY.unwrap_or(-1),
             threshold: SAME_VOICE,
-            ..Default::default()
         },
         min_duration_on: SHORTEST_SPEECH,
         min_duration_off: SHORTEST_GAP,
