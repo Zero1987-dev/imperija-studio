@@ -5325,9 +5325,9 @@ impl Studio {
     /// The other half of "Follow the face", and the sharper half by a long
     /// way. A tall crop of a wide shot uses under a third of its width and
     /// then enlarges it: 608 pixels of a 1920-wide frame shown at 1080.
-    /// Laying the whole width across instead *shrinks* it - 1920 into 1080
-    /// - and shrinking always looks sharp. Measured on one clip: nearly
-    /// three times the fine detail of the same frame cropped.
+    /// Laying the whole width across instead *shrinks* it, 1920 into 1080,
+    /// and shrinking always looks sharp. Measured on one clip: nearly three
+    /// times the fine detail of the same frame cropped.
     ///
     /// What it costs is size. The face is smaller and there is a band above
     /// it and below it, which is where the captions go - and which is why
