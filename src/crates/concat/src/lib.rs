@@ -644,6 +644,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     editor.on_library_add_sound(on_window!(|state, id: SharedString| {
         state.add_sound(id.as_str());
     }));
+    editor.on_library_preview_sound(on_window!(|state, id: SharedString| {
+        state.preview_sound(id.as_str());
+    }));
     editor.on_library_apply_transition(on_window!(|state, id: SharedString| {
         state.apply_transition(id.as_str());
     }));

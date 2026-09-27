@@ -5102,6 +5102,21 @@ impl Studio {
         });
     }
 
+    /// Plays one of the made sound effects, without laying anything down.
+    ///
+    /// A click on a card in the sound shelf; the card's plus is what puts a
+    /// clip on a track. Rendered afresh each time rather than read back
+    /// from the file, because rendering one is a few milliseconds of
+    /// arithmetic and reading it is a trip to the disk and a decoder.
+    pub fn preview_sound(&self, id: &str) {
+        let Some(sound) = concat_media::sfx::Sound::from_id(id) else {
+            return;
+        };
+        self.host
+            .audition
+            .play(concat_media::sfx::render(sound), concat_media::sfx::RATE);
+    }
+
     /// Opens the Video Downloader sheet.
     pub fn open_downloader(&mut self) {
         self.downloader.open = true;

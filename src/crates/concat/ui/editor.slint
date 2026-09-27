@@ -109,6 +109,8 @@ export global Editor {
     callback library-apply-transition(transition-id: string);
     /// Lay one of the made sound effects at the playhead.
     callback library-add-sound(sound-id: string);
+    /// Play one, without laying anything down.
+    callback library-preview-sound(sound-id: string);
     /// Filters page: lay the look down as a layer at the playhead.
     callback library-apply-filter(filter-id: string, label: string);
     /// Filters page: show the look over the whole picture without laying
