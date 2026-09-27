@@ -5098,7 +5098,7 @@ impl Studio {
         // No notice: the clip appearing under the playhead says it.
         self.apply(Command::AddClipAtFirstFree {
             media_id,
-            start: self.playhead,
+            start: f64::from(self.playhead),
         });
     }
 
