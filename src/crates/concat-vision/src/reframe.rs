@@ -250,6 +250,19 @@ pub const FACE_HEIGHT: f64 = 0.22;
 /// small.
 pub const ZOOM_MAX: f64 = 1.5;
 
+/// How far past its own pixels the source may be stretched.
+///
+/// A tall slice of a wide shot is already an enlargement before any zoom:
+/// a 9:16 piece of a 1920-wide frame is 608 pixels across and is shown at
+/// 1080, which is a stretch of nearly two. Zooming further on a source
+/// like that trades sharpness for a bigger face and loses, so this stops
+/// it - a fifteen percent stretch is about where enlargement stops being
+/// visible. A 4K source has room to spare and this never binds.
+///
+/// It can never push the scale *below* covering the frame: black bars are
+/// worse than softness, and that is a floor, not a preference.
+pub const STRETCH_MAX: f64 = 1.15;
+
 /// Where down the frame the face's box is placed.
 ///
 /// Dead centre leaves as much room above the head as below the chest and
@@ -322,13 +335,28 @@ pub fn subject_height(samples: &[Vec<Face>]) -> f64 {
 /// for `s` is the whole of this. The answer is then held between merely
 /// covering the frame - below which black bars appear - and the zoom
 /// limit.
-pub fn framing(face_height: f64, source_aspect: f64, frame_aspect: f64) -> f64 {
+pub fn framing(
+    face_height: f64,
+    source_aspect: f64,
+    frame_aspect: f64,
+    source_width: f64,
+    frame_width: f64,
+) -> f64 {
     let cover = cover_scale(source_aspect, frame_aspect);
     if face_height <= 0.0 || source_aspect <= 0.0 || frame_aspect <= 0.0 {
         return cover;
     }
     let wanted = FACE_HEIGHT / face_height * source_aspect / frame_aspect;
-    wanted.clamp(cover, cover * ZOOM_MAX)
+    let mut ceiling = cover * ZOOM_MAX;
+    if source_width > 0.0 && frame_width > 0.0 {
+        // At scale `s` the slice on screen is `source_width / s` pixels
+        // across and is shown at `frame_width`, so the stretch is
+        // `s * frame_width / source_width`. Solving that for the largest
+        // scale within [`STRETCH_MAX`] is the whole of this.
+        let affordable = STRETCH_MAX * source_width / frame_width;
+        ceiling = ceiling.min(affordable.max(cover));
+    }
+    wanted.clamp(cover, ceiling)
 }
 
 /// How much of the frame one source-fraction of subject movement crosses,
@@ -1006,17 +1034,42 @@ mod tests {
     #[test]
     fn a_small_face_is_zoomed_to_but_never_past_the_limit() {
         let cover = cover_scale(WIDE, TALL);
+        // A 4K source into a 1080-wide frame: pixels to spare, so the
+        // pixel budget never binds and the zoom limit is what decides.
+        let roomy = |face: f64| framing(face, WIDE, TALL, 3840.0, 1080.0);
         // At the covering scale the source stands exactly one frame tall,
         // so a face already the wanted size asks for no zoom at all.
-        assert!((framing(FACE_HEIGHT, WIDE, TALL) - cover).abs() < 1e-9);
+        assert!((roomy(FACE_HEIGHT) - cover).abs() < 1e-9);
         // Half that size would want twice the zoom, and is capped.
-        let s = framing(FACE_HEIGHT / 2.0, WIDE, TALL);
-        assert!((s - cover * ZOOM_MAX).abs() < 1e-9, "{s}");
+        let s = roomy(FACE_HEIGHT / 2.0);
+        assert!(s > cover && s <= cover * ZOOM_MAX + 1e-9, "{s}");
         // A face larger than wanted never zooms out past covering: that
         // would put black bars down the sides.
-        assert!((framing(FACE_HEIGHT * 2.0, WIDE, TALL) - cover).abs() < 1e-9);
+        assert!((roomy(FACE_HEIGHT * 2.0) - cover).abs() < 1e-9);
         // And no face at all is no zoom, not a division by zero.
-        assert!((framing(0.0, WIDE, TALL) - cover).abs() < 1e-9);
+        assert!((roomy(0.0) - cover).abs() < 1e-9);
+        // Told nothing about pixels, it falls back to the zoom limit.
+        let s = framing(FACE_HEIGHT / 2.0, WIDE, TALL, 0.0, 0.0);
+        assert!((s - cover * ZOOM_MAX).abs() < 1e-9, "{s}");
+    }
+
+    #[test]
+    fn a_source_with_no_pixels_to_spare_is_not_zoomed_into() {
+        // The fault this exists for. A 9:16 slice of a 1920-wide frame is
+        // 608 pixels across and is already shown at 1080; zooming further
+        // trades sharpness for a bigger face and loses.
+        let cover = cover_scale(WIDE, TALL);
+        let tight = framing(FACE_HEIGHT / 3.0, WIDE, TALL, 1920.0, 1080.0);
+        assert!(
+            (tight - cover).abs() < 1e-9,
+            "a 1080p source was zoomed to {tight}, past covering at {cover}"
+        );
+        // The same shot from 4K has the pixels, and is zoomed.
+        let roomy = framing(FACE_HEIGHT / 3.0, WIDE, TALL, 3840.0, 1080.0);
+        assert!(roomy > cover, "a 4K source was not zoomed at all: {roomy}");
+        // But never so far that it is stretched past the allowance.
+        let stretch = roomy * 1080.0 / 3840.0;
+        assert!(stretch <= STRETCH_MAX + 1e-9, "stretched {stretch}x");
     }
 
     #[test]

@@ -60,6 +60,15 @@ pub struct ReframeRequest {
     pub source_aspect: f64,
     /// The shape being exported to, width over height - 0.5625 for 9:16.
     pub frame_aspect: f64,
+    /// The source picture's width in pixels.
+    ///
+    /// With `frame_width` it says how far the picture may be zoomed before
+    /// it is being stretched past the detail it holds - see
+    /// [`reframe::framing`]. Zero for "do not know", which leaves the zoom
+    /// to its own limit.
+    pub source_width: f64,
+    /// The exported frame's width in pixels.
+    pub frame_width: f64,
     /// Who was speaking and when, in seconds from the clip's own start.
     ///
     /// Empty is the ordinary case and means the camera falls back to
@@ -216,6 +225,8 @@ impl Reframers {
             reframe::subject_height(&seen),
             request.source_aspect,
             request.frame_aspect,
+            request.source_width,
+            request.frame_width,
         );
         // The camera judges drift on the exported frame, so it has to know
         // how much of that frame a step in the source crosses.

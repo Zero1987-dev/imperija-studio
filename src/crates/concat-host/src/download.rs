@@ -207,6 +207,29 @@ pub fn name_template(section: Option<(f64, f64)>) -> String {
 /// asks it to seek.
 pub const EDITABLE: &str = "[vcodec^=avc1]";
 
+/// The tallest picture YouTube serves H.264 at.
+///
+/// Above this there is no H.264 copy to be had - 1440p and 2160p exist in
+/// VP9 and AV1 only - so asking for H.264 first at those heights is asking
+/// for 1080p and being told nothing about it. That is exactly what used to
+/// happen: "Best there is" and "4K" both quietly brought down 1080p, and a
+/// tall crop of a 1080p frame is under a third of its width blown up, which
+/// is soft however carefully it is then exported.
+pub const AVC_CEILING: u32 = 1080;
+
+/// Everything but AV1.
+///
+/// The objection was always to AV1 rather than to everything that is not
+/// H.264: VP9 decodes in hardware on most machines of the last decade and
+/// plays on the processor well enough where it does not. Above
+/// [`AVC_CEILING`] this is what makes 1440p and 4K reachable at all.
+pub const SMOOTH: &str = "[vcodec!*=av01]";
+
+/// Plain HTTPS rather than a playlist of segments: the same picture read as
+/// one file with byte ranges, which is what `--download-sections` wants when
+/// twenty seconds of a two-hour podcast is all that is being taken.
+pub const DIRECT: &str = "[protocol^=https]";
+
 /// And the sound: AAC in an MP4, the pair H.264 is normally carried with.
 /// Opus and Vorbis are fine to play, but muxing them beside H.264 leaves
 /// a file some tools will not open.
@@ -236,9 +259,28 @@ pub fn format_for(request: &FetchRequest) -> String {
     if request.max_fps > 0 {
         limits.push_str(&format!("[fps<={}]", request.max_fps));
     }
-    format!(
-        "bv*{limits}{EDITABLE}{clean}+ba{EDITABLE_SOUND}{clean}         /bv*{limits}{EDITABLE}{clean}+ba{clean}         /bv*{limits}{clean}+ba{clean}         /bv*{EDITABLE}{clean}+ba{clean}         /b{clean}"
-    )
+    // Which codec leads. Below the ceiling H.264 both exists and plays
+    // back smoothest, so it goes first; above it, leading with H.264 caps
+    // the picture at 1080p without saying so.
+    let beyond_avc = request.max_height == 0 || request.max_height > AVC_CEILING;
+    let (first, second) = if beyond_avc {
+        (SMOOTH, EDITABLE)
+    } else {
+        (EDITABLE, SMOOTH)
+    };
+    // Written as one piece: yt-dlp tolerates whitespace around the slashes,
+    // but a selector with runs of spaces in it is a selector nobody can
+    // read back.
+    [
+        format!("bv*{limits}{first}{DIRECT}{clean}+ba{EDITABLE_SOUND}{clean}"),
+        format!("bv*{limits}{first}{clean}+ba{EDITABLE_SOUND}{clean}"),
+        format!("bv*{limits}{first}{clean}+ba{clean}"),
+        format!("bv*{limits}{second}{clean}+ba{clean}"),
+        format!("bv*{limits}{clean}+ba{clean}"),
+        format!("bv*{EDITABLE}{clean}+ba{clean}"),
+        format!("b{clean}"),
+    ]
+    .join("/")
 }
 
 /// The fetching service: where the tool lives, and the one-job slot.
@@ -822,6 +864,57 @@ mod tests {
         let first = f.split('/').next().expect("a first choice");
         assert!(first.contains("vcodec^=avc1"), "{first}");
         assert!(first.contains("acodec^=mp4a"), "{first}");
+    }
+
+    #[test]
+    fn asking_above_1080_does_not_quietly_bring_down_1080() {
+        // The fault this exists for. YouTube serves 1440p and 2160p in VP9
+        // and AV1 only, so leading with H.264 at those heights answers with
+        // the best H.264 there is - 1080p - and says nothing about it.
+        for height in [0, 1440, 2160] {
+            let f = asking(Wanted::Video, height, 0);
+            let first = f.split('/').next().expect("a first choice");
+            assert!(
+                !first.contains("vcodec^=avc1"),
+                "asking for {height} led with H.264, which stops at 1080: {first}"
+            );
+            assert!(
+                first.contains("vcodec!*=av01"),
+                "asking for {height} did not rule out AV1: {first}"
+            );
+        }
+    }
+
+    #[test]
+    fn at_1080_and_under_h264_still_leads() {
+        for height in [480, 720, 1080] {
+            let f = asking(Wanted::Video, height, 0);
+            let first = f.split('/').next().expect("a first choice");
+            assert!(first.contains("vcodec^=avc1"), "{height}: {first}");
+        }
+    }
+
+    #[test]
+    fn av1_is_never_the_first_thing_asked_for() {
+        for height in [0, 720, 1080, 1440, 2160] {
+            let f = asking(Wanted::Video, height, 0);
+            let first = f.split('/').next().expect("a first choice");
+            assert!(
+                first.contains("avc1") || first.contains("!*=av01"),
+                "{height} would take AV1 first: {first}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_selector_carries_no_stray_whitespace() {
+        // yt-dlp tolerates spaces around the slashes; nobody reading the
+        // command back does.
+        for height in [0, 1080, 2160] {
+            let f = asking(Wanted::Video, height, 30);
+            assert!(!f.contains(' '), "{f}");
+        }
+        assert!(!asking(Wanted::Audio, 0, 0).contains(' '));
     }
 
     #[test]

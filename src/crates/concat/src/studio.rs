@@ -4955,6 +4955,8 @@ impl Studio {
             duration: (clip.duration * clip.speed.max(0.01)).max(0.0),
             source_aspect: f64::from(width) / f64::from(height),
             frame_aspect: f64::from(video.width) / f64::from(video.height),
+            source_width: f64::from(width),
+            frame_width: f64::from(video.width),
             // Filled in on the worker, below: hearing the voices apart is
             // a download and a read of the audio, neither of which belongs
             // on the thread drawing the window.
