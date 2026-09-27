@@ -225,10 +225,18 @@ pub const AVC_CEILING: u32 = 1080;
 /// [`AVC_CEILING`] this is what makes 1440p and 4K reachable at all.
 pub const SMOOTH: &str = "[vcodec!*=av01]";
 
-/// Plain HTTPS rather than a playlist of segments: the same picture read as
-/// one file with byte ranges, which is what `--download-sections` wants when
-/// twenty seconds of a two-hour podcast is all that is being taken.
-pub const DIRECT: &str = "[protocol^=https]";
+/// Everything but AV1, *and* taller than H.264 is served at.
+///
+/// The pair has to be asked for together. On its own, "anything but AV1"
+/// reads to yt-dlp as a codec preference, and it ranks VP9 above H.264
+/// before it looks at bitrate at all - so on a video with no copy above
+/// 1080p it answers with the thinnest VP9 there is rather than the fatter
+/// H.264 beside it. Measured on one: 801 kbps of VP9 where 1304 kbps of
+/// H.264 was available, both 1080p. Tying it to a height H.264 cannot
+/// reach means the branch only fires when it has something to offer.
+fn taller_than_avc() -> String {
+    format!("[height>{AVC_CEILING}]{SMOOTH}")
+}
 
 /// And the sound: AAC in an MP4, the pair H.264 is normally carried with.
 /// Opus and Vorbis are fine to play, but muxing them beside H.264 leaves
@@ -259,28 +267,33 @@ pub fn format_for(request: &FetchRequest) -> String {
     if request.max_fps > 0 {
         limits.push_str(&format!("[fps<={}]", request.max_fps));
     }
-    // Which codec leads. Below the ceiling H.264 both exists and plays
-    // back smoothest, so it goes first; above it, leading with H.264 caps
-    // the picture at 1080p without saying so.
-    let beyond_avc = request.max_height == 0 || request.max_height > AVC_CEILING;
-    let (first, second) = if beyond_avc {
-        (SMOOTH, EDITABLE)
-    } else {
-        (EDITABLE, SMOOTH)
-    };
-    // Written as one piece: yt-dlp tolerates whitespace around the slashes,
-    // but a selector with runs of spaces in it is a selector nobody can
-    // read back.
-    [
-        format!("bv*{limits}{first}{DIRECT}{clean}+ba{EDITABLE_SOUND}{clean}"),
-        format!("bv*{limits}{first}{clean}+ba{EDITABLE_SOUND}{clean}"),
-        format!("bv*{limits}{first}{clean}+ba{clean}"),
-        format!("bv*{limits}{second}{clean}+ba{clean}"),
-        format!("bv*{limits}{clean}+ba{clean}"),
-        format!("bv*{EDITABLE}{clean}+ba{clean}"),
-        format!("b{clean}"),
-    ]
-    .join("/")
+    let mut choices: Vec<String> = Vec::new();
+    // A picture H.264 cannot carry, when one was asked for and one exists.
+    // Only then: see `taller_than_avc` for what asking unconditionally
+    // costs.
+    if request.max_height == 0 || request.max_height > AVC_CEILING {
+        let tall = taller_than_avc();
+        choices.push(format!(
+            "bv*{limits}{tall}{clean}+ba{EDITABLE_SOUND}{clean}"
+        ));
+        choices.push(format!("bv*{limits}{tall}{clean}+ba{clean}"));
+    }
+    // Then H.264, which every graphics chip of the last fifteen years
+    // decodes in hardware and which YouTube carries at a fatter bitrate
+    // than its VP9 copy of the same size.
+    choices.push(format!(
+        "bv*{limits}{EDITABLE}{clean}+ba{EDITABLE_SOUND}{clean}"
+    ));
+    choices.push(format!("bv*{limits}{EDITABLE}{clean}+ba{clean}"));
+    // Then anything that is not AV1, then anything at all.
+    choices.push(format!("bv*{limits}{SMOOTH}{clean}+ba{clean}"));
+    choices.push(format!("bv*{limits}{clean}+ba{clean}"));
+    choices.push(format!("bv*{EDITABLE}{clean}+ba{clean}"));
+    choices.push(format!("b{clean}"));
+    // Joined rather than written as one literal: yt-dlp tolerates
+    // whitespace around the slashes, but a selector with runs of spaces in
+    // it is a selector nobody can read back.
+    choices.join("/")
 }
 
 /// The fetching service: where the tool lives, and the one-job slot.
@@ -881,6 +894,32 @@ mod tests {
             assert!(
                 first.contains("vcodec!*=av01"),
                 "asking for {height} did not rule out AV1: {first}"
+            );
+            assert!(
+                first.contains("[height>1080]"),
+                "asking for {height} did not tie the branch to a height H.264 \
+                 cannot reach, so a video with no such copy would take a thin \
+                 VP9 over a fat H.264: {first}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_video_with_nothing_above_1080_still_gets_the_best_h264() {
+        // The other half of the same fault. Asking for 4K from a video that
+        // has none must not end in the thinnest 1080p there is; the choice
+        // after the tall one is H.264 with no height demand on it.
+        for height in [0, 2160] {
+            let f = asking(Wanted::Video, height, 0);
+            let untall: Vec<&str> = f
+                .split('/')
+                .filter(|choice| !choice.contains("[height>1080]"))
+                .collect();
+            assert!(
+                untall
+                    .first()
+                    .is_some_and(|choice| choice.contains("vcodec^=avc1")),
+                "nothing falls back to H.264 for {height}: {f}"
             );
         }
     }
