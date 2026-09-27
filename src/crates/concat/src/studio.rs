@@ -160,6 +160,16 @@ pub(crate) const EXPORT_TIERS: [f32; 3] = [16.0, 8.0, 4.0];
 pub(crate) const EXPORT_CRF: [u8; 3] = [16, 20, 26];
 pub(crate) const AUDIO_BPS: f32 = 192_000.0;
 
+/// The crisping laid on a picture the reframe had to enlarge.
+///
+/// `unsharp=5:5:0.8:5:5:0` in the end, which is what the catalogue's
+/// Sharpen turns this into. Chosen by measuring rather than by eye: on a
+/// 1080p podcast cropped tall, it lifted the fine detail by about a tenth
+/// and still looked like a photograph. Half again as much lifted it
+/// further and started showing the noise in the skin.
+pub(crate) const SHARPEN_ID: &str = "concat.sharpen";
+pub(crate) const SHARPEN_AMOUNT: f64 = 0.8;
+
 /// The frame shapes the launch screen offers, as the ratio behind each
 /// label: width over height.
 ///
@@ -5310,6 +5320,73 @@ impl Studio {
     /// Puts a reframe's keys on clip `id` as one undo step: the three
     /// properties it drives are cleared first, so a second reframe replaces
     /// the first rather than fighting it.
+    /// Lays the whole width of the picture across the frame.
+    ///
+    /// The other half of "Follow the face", and the sharper half by a long
+    /// way. A tall crop of a wide shot uses under a third of its width and
+    /// then enlarges it: 608 pixels of a 1920-wide frame shown at 1080.
+    /// Laying the whole width across instead *shrinks* it - 1920 into 1080
+    /// - and shrinking always looks sharp. Measured on one clip: nearly
+    /// three times the fine detail of the same frame cropped.
+    ///
+    /// What it costs is size. The face is smaller and there is a band above
+    /// it and below it, which is where the captions go - and which is why
+    /// so many clips that look sharp are built this way.
+    pub fn fill_width_clip(&mut self, id: &str) {
+        use model::KeyProperty::{OffsetX, OffsetY, Scale};
+        let Some(clip) = self.clip(id).cloned() else {
+            return;
+        };
+        if clip.kind != model::ClipKind::Video && clip.kind != model::ClipKind::Image {
+            return;
+        }
+        self.flush_commit();
+        // Scale 1 is the *fitted* size - the whole picture inside the frame
+        // - which for a wide source in a tall one is exactly its full width.
+        let mut commands = vec![Command::SetClipTransform {
+            clip_id: id.to_owned(),
+            scale: Some(1.0),
+            offset_x: Some(0.0),
+            offset_y: Some(0.0),
+            rotation: Some(clip.rotation),
+            stretch_x: Some(clip.stretch_x),
+            stretch_y: Some(clip.stretch_y),
+        }];
+        // A camera path from an earlier reframe now describes a camera that
+        // is not there any more.
+        for property in [Scale, OffsetX, OffsetY] {
+            if clip.keys_on(property).next().is_some() {
+                commands.push(Command::ClearClipKeys {
+                    clip_id: id.to_owned(),
+                    property,
+                });
+            }
+        }
+        // And the sharpening that went with an enlargement, which this is
+        // the opposite of.
+        if clip
+            .video_effects
+            .iter()
+            .any(|effect| effect.id == SHARPEN_ID)
+        {
+            let kept: Vec<model::AppliedFilter> = clip
+                .video_effects
+                .iter()
+                .filter(|effect| effect.id != SHARPEN_ID)
+                .cloned()
+                .collect();
+            commands.push(Command::UpdateClip {
+                clip_id: id.to_owned(),
+                patch: ClipPatch {
+                    video_effects: Some(kept),
+                    ..ClipPatch::default()
+                },
+            });
+        }
+        self.apply(Command::Batch { commands });
+        self.notify(&t("Full width"), false);
+    }
+
     fn adopt_reframe(&mut self, id: &str, keys: &[concat_host::ReframeKey]) {
         use model::KeyProperty::{OffsetX, OffsetY, Scale};
         let Some(clip) = self.clip(id).cloned() else {
@@ -5323,6 +5400,43 @@ impl Studio {
                     property,
                 });
             }
+        }
+        // A tall crop of a wide shot is an enlargement before any zoom, and
+        // an enlarged picture wants a little of its edge back. Laid on as an
+        // ordinary effect rather than baked in: it shows in the chain, it
+        // has a knob, and it comes off with one click.
+        let enlarged = keys
+            .iter()
+            .map(|key| key.shot.scale)
+            .fold(0.0_f64, f64::max)
+            * f64::from(self.output_size().0)
+            / self
+                .project()
+                .media_by_id(&clip.media_id)
+                .and_then(|item| item.width)
+                .map_or(0.0, f64::from);
+        if enlarged > 1.05
+            && !clip
+                .video_effects
+                .iter()
+                .any(|effect| effect.id == SHARPEN_ID)
+        {
+            let mut effects = clip.video_effects.clone();
+            effects.push(model::AppliedFilter {
+                id: SHARPEN_ID.to_owned(),
+                params: [("amount".to_owned(), SHARPEN_AMOUNT)]
+                    .into_iter()
+                    .collect(),
+                enabled: true,
+                ..model::AppliedFilter::default()
+            });
+            commands.push(Command::UpdateClip {
+                clip_id: id.to_owned(),
+                patch: ClipPatch {
+                    video_effects: Some(effects),
+                    ..ClipPatch::default()
+                },
+            });
         }
         for key in keys {
             for (property, value) in [
@@ -7975,6 +8089,17 @@ impl Studio {
                 "",
                 !locked && clip.kind == model::ClipKind::Video && self.reframe_jobs.is_empty(),
             ),
+            // The other way to make a wide shot tall, and the sharp one:
+            // the whole width laid across, letterboxed, rather than a third
+            // of it enlarged. Nothing to analyse, so never greyed for a job.
+            action(
+                "fill-width",
+                t("Full width"),
+                Glyph::Frame,
+                "",
+                !locked
+                    && (clip.kind == model::ClipKind::Video || clip.kind == model::ClipKind::Image),
+            ),
             rule(),
         ];
         // One slot, two verbs: the sound is either on its picture or off it.
@@ -8553,6 +8678,7 @@ impl Studio {
             "freeze" => self.freeze_at_playhead(),
             "enhance" => self.enhance_clip(id),
             "reframe" => self.reframe_clip(id),
+            "fill-width" => self.fill_width_clip(id),
             "render-sound" => self.render_clip_sound(id),
             "detach" => {
                 self.apply(Command::DetachAudio {
