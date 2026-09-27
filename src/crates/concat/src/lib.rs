@@ -644,9 +644,11 @@ pub fn run() -> Result<(), slint::PlatformError> {
     editor.on_library_add_sound(on_window!(|state, id: SharedString| {
         state.add_sound(id.as_str());
     }));
-    editor.on_library_preview_sound(on_window!(|state, id: SharedString| {
-        state.preview_sound(id.as_str());
-    }));
+    // Not through the handler macro: playing a sound changes nothing, so
+    // there is no state to borrow mutably and nothing to publish after.
+    editor.on_library_preview_sound(|id: SharedString| {
+        Shell::with(|shell, _| shell.studio.borrow().preview_sound(id.as_str()));
+    });
     editor.on_library_apply_transition(on_window!(|state, id: SharedString| {
         state.apply_transition(id.as_str());
     }));
