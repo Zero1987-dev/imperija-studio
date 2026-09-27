@@ -170,6 +170,16 @@ pub(crate) const AUDIO_BPS: f32 = 192_000.0;
 pub(crate) const SHARPEN_ID: &str = "concat.sharpen";
 pub(crate) const SHARPEN_AMOUNT: f64 = 0.8;
 
+/// The wall behind a picture laid across the frame: the same picture,
+/// blurred past recognition and taken down in brightness.
+///
+/// The blur has to be heavy enough that nobody reads it as a second video;
+/// at less than this the shapes still move and the eye follows them. The
+/// dimming is what keeps it behind rather than beside.
+pub(crate) const BLUR_ID: &str = "concat.gaussian-blur";
+pub(crate) const BACKDROP_BLUR: f64 = 28.0;
+pub(crate) const BACKDROP_DIM: f64 = 0.7;
+
 /// The frame shapes the launch screen offers, as the ratio behind each
 /// label: width over height.
 ///
@@ -5320,7 +5330,8 @@ impl Studio {
     /// Puts a reframe's keys on clip `id` as one undo step: the three
     /// properties it drives are cleared first, so a second reframe replaces
     /// the first rather than fighting it.
-    /// Lays the whole width of the picture across the frame.
+    /// Lays the whole width of the picture across the frame, over a
+    /// blurred copy of itself.
     ///
     /// The other half of "Follow the face", and the sharper half by a long
     /// way. A tall crop of a wide shot uses under a third of its width and
@@ -5329,9 +5340,15 @@ impl Studio {
     /// and shrinking always looks sharp. Measured on one clip: nearly three
     /// times the fine detail of the same frame cropped.
     ///
-    /// What it costs is size. The face is smaller and there is a band above
-    /// it and below it, which is where the captions go - and which is why
-    /// so many clips that look sharp are built this way.
+    /// What is left over above and below could be black, and that is what
+    /// a letterbox is; it is also what makes a short look like a mistake.
+    /// So the same picture goes behind it, grown until it covers the frame
+    /// and blurred past recognition. Two clips rather than one effect,
+    /// because an effect is applied to a clip's own picture before anything
+    /// knows how big the frame is.
+    ///
+    /// The copy is what is seen and keeps the sound; the original becomes
+    /// the backdrop, silent so the sound is not heard twice.
     pub fn fill_width_clip(&mut self, id: &str) {
         use model::KeyProperty::{OffsetX, OffsetY, Scale};
         let Some(clip) = self.clip(id).cloned() else {
@@ -5341,49 +5358,107 @@ impl Studio {
             return;
         }
         self.flush_commit();
-        // Scale 1 is the *fitted* size - the whole picture inside the frame
-        // - which for a wide source in a tall one is exactly its full width.
-        let mut commands = vec![Command::SetClipTransform {
-            clip_id: id.to_owned(),
-            scale: Some(1.0),
-            offset_x: Some(0.0),
-            offset_y: Some(0.0),
-            rotation: Some(clip.rotation),
-            stretch_x: Some(clip.stretch_x),
-            stretch_y: Some(clip.stretch_y),
-        }];
-        // A camera path from an earlier reframe now describes a camera that
-        // is not there any more.
-        for property in [Scale, OffsetX, OffsetY] {
-            if clip.keys_on(property).next().is_some() {
+
+        // How far the backdrop has to grow before nothing shows past its
+        // edge: the ratio of the two shapes, whichever way round they are.
+        let (frame_w, frame_h) = self.output_size();
+        let frame_aspect = f64::from(frame_w) / f64::from(frame_h).max(1.0);
+        let source_aspect = self
+            .project()
+            .media_by_id(&clip.media_id)
+            .and_then(|item| Some(f64::from(item.width?) / f64::from(item.height?).max(1.0)))
+            .unwrap_or(frame_aspect);
+        let cover = (source_aspect / frame_aspect)
+            .max(frame_aspect / source_aspect)
+            .max(1.0);
+
+        // The copy, which `duplicate` lays after the original and leaves
+        // selected.
+        self.duplicate(&clip);
+        let Some(front) = self.selection.first().cloned() else {
+            return;
+        };
+        // A lane of its own, in front: tracks composite in order and a new
+        // one lands on top.
+        let Some(lane) = self.apply(Command::AddTrack) else {
+            return;
+        };
+
+        let mut commands = vec![
+            Command::MoveClips {
+                moves: vec![ClipMove {
+                    clip_id: front.clone(),
+                    start: clip.start,
+                    track_id: lane,
+                }],
+            },
+            // Seen: the whole width across the frame. Scale 1 is the
+            // *fitted* size, which for a wide source in a tall frame is
+            // exactly its full width.
+            Command::SetClipTransform {
+                clip_id: front.clone(),
+                scale: Some(1.0),
+                offset_x: Some(0.0),
+                offset_y: Some(0.0),
+                rotation: Some(clip.rotation),
+                stretch_x: Some(clip.stretch_x),
+                stretch_y: Some(clip.stretch_y),
+            },
+            Command::UpdateClip {
+                clip_id: front.clone(),
+                patch: ClipPatch {
+                    name: Some(clip.name.clone()),
+                    // Crisping belongs to an enlargement, and this is the
+                    // opposite of one.
+                    video_effects: Some(
+                        clip.video_effects
+                            .iter()
+                            .filter(|effect| effect.id != SHARPEN_ID)
+                            .cloned()
+                            .collect(),
+                    ),
+                    ..ClipPatch::default()
+                },
+            },
+            // Behind: the same picture, covering the frame, blurred and
+            // dimmed so it reads as a wall rather than as a second video.
+            Command::SetClipTransform {
+                clip_id: id.to_owned(),
+                scale: Some(cover),
+                offset_x: Some(0.0),
+                offset_y: Some(0.0),
+                rotation: Some(0.0),
+                stretch_x: Some(1.0),
+                stretch_y: Some(1.0),
+            },
+            Command::UpdateClip {
+                clip_id: id.to_owned(),
+                patch: ClipPatch {
+                    muted: Some(true),
+                    volume: Some(0.0),
+                    opacity: Some(BACKDROP_DIM),
+                    video_effects: Some(vec![model::AppliedFilter {
+                        id: BLUR_ID.to_owned(),
+                        params: [("radius".to_owned(), BACKDROP_BLUR)].into_iter().collect(),
+                        enabled: true,
+                        keys: Default::default(),
+                    }]),
+                    ..ClipPatch::default()
+                },
+            },
+        ];
+        // A camera path on either of them now describes a camera that is
+        // not there any more.
+        for clip_id in [id.to_owned(), front.clone()] {
+            for property in [Scale, OffsetX, OffsetY] {
                 commands.push(Command::ClearClipKeys {
-                    clip_id: id.to_owned(),
+                    clip_id: clip_id.clone(),
                     property,
                 });
             }
         }
-        // And the sharpening that went with an enlargement, which this is
-        // the opposite of.
-        if clip
-            .video_effects
-            .iter()
-            .any(|effect| effect.id == SHARPEN_ID)
-        {
-            let kept: Vec<model::AppliedFilter> = clip
-                .video_effects
-                .iter()
-                .filter(|effect| effect.id != SHARPEN_ID)
-                .cloned()
-                .collect();
-            commands.push(Command::UpdateClip {
-                clip_id: id.to_owned(),
-                patch: ClipPatch {
-                    video_effects: Some(kept),
-                    ..ClipPatch::default()
-                },
-            });
-        }
         self.apply(Command::Batch { commands });
+        self.selection = vec![front];
         self.notify(&t("Full width"), false);
     }
 
