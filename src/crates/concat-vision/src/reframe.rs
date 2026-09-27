@@ -1074,7 +1074,8 @@ mod tests {
 
     #[test]
     fn a_zoomed_shot_puts_the_head_above_the_middle() {
-        let scale = framing(FACE_HEIGHT / 2.0, WIDE, TALL);
+        // From 4K, so the pixel budget leaves room to zoom at all.
+        let scale = framing(FACE_HEIGHT / 2.0, WIDE, TALL, 3840.0, 1080.0);
         let centred = shot_for(0.5, 0.5, scale, WIDE, TALL);
         let placed = shot_placing(0.5, 0.5, (0.5, HEADROOM), scale, WIDE, TALL);
         assert!(placed.offset_y < centred.offset_y, "{placed:?} {centred:?}");
