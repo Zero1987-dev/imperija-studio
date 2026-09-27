@@ -980,8 +980,13 @@ mod tests {
     #[test]
     fn no_limits_asks_for_the_best_there_is() {
         let f = asking(Wanted::Video, 0, 0);
-        assert!(!f.contains("height"), "{f}");
-        assert!(!f.contains("fps"), "{f}");
+        // No *ceilings*. The `[height>1080]` on the first choice is the
+        // opposite of one - it is what makes "best there is" reach past
+        // the tallest picture H.264 is served at - so it is checked for
+        // rather than banned.
+        assert!(!f.contains("height<="), "{f}");
+        assert!(!f.contains("fps<="), "{f}");
+        assert!(f.contains("[height>1080]"), "{f}");
         assert!(f.starts_with("bv*"), "{f}");
     }
 
