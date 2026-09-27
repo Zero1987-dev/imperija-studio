@@ -1,7 +1,4 @@
 {
-  "_": {
-    "name": "Türkçe"
-  },
   "1 stroke": "1 fırça darbesi",
   "10-bit colour": "10 bit renk",
   "127.0.0.1 is this machine only. Any other address is reachable from the network, needs a token, and is still not encrypted.": "127.0.0.1 yalnızca bu makinedir. Başka her adres ağdan erişilebilir, bir belirteç ister ve yine de şifrelenmez.",
@@ -809,6 +806,7 @@
   "Sound alone, exactly as the site serves it. Nothing is re-encoded, so nothing is lost and it is immediate.": "Yalnızca ses, sitenin sunduğu biçimde. Hiçbir şey yeniden kodlanmaz, bu yüzden kayıp olmaz ve anında gelir.",
   "Sound alone, turned into an MP3. Opens anywhere, but it is encoded a second time and takes longer.": "Yalnızca ses, MP3'e çevrilmiş. Her yerde açılır ama ikinci kez kodlanır ve daha uzun sürer.",
   "Sound rendered to Generated › Processed": "Ses Oluşturulan › İşlenmiş altına işlendi",
+  "Sounds": "Sesler",
   "Source": "Source",
   "Space": "Mekân",
   "Spanish": "İspanyolca",
@@ -1005,6 +1003,9 @@
   "Zoom in": "Yaklaştır",
   "Zoom out": "Uzaklaştır",
   "Zoom to fit": "Sığdır",
+  "_": {
+    "name": "Türkçe"
+  },
   "almost done": "neredeyse bitti",
   "at the playhead": "at the playhead",
   "audio effect": "ses efekti",

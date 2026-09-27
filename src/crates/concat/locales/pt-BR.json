@@ -1,7 +1,4 @@
 {
-  "_": {
-    "name": "Português (Brasil)"
-  },
   "1 stroke": "1 traço",
   "10-bit colour": "Cor de 10 bits",
   "127.0.0.1 is this machine only. Any other address is reachable from the network, needs a token, and is still not encrypted.": "127.0.0.1 é só esta máquina. Qualquer outro endereço fica acessível pela rede, exige um token e mesmo assim não é criptografado.",
@@ -809,6 +806,7 @@
   "Sound alone, exactly as the site serves it. Nothing is re-encoded, so nothing is lost and it is immediate.": "Só o som, exatamente como o site serve. Nada é recodificado, então nada se perde e é imediato.",
   "Sound alone, turned into an MP3. Opens anywhere, but it is encoded a second time and takes longer.": "Só o som, convertido em MP3. Abre em qualquer lugar, mas é codificado uma segunda vez e demora mais.",
   "Sound rendered to Generated › Processed": "Som renderizado em Gerado › Processado",
+  "Sounds": "Sons",
   "Source": "Source",
   "Space": "Espaço",
   "Spanish": "Espanhol",
@@ -1005,6 +1003,9 @@
   "Zoom in": "Ampliar",
   "Zoom out": "Reduzir",
   "Zoom to fit": "Ajustar à janela",
+  "_": {
+    "name": "Português (Brasil)"
+  },
   "almost done": "quase pronto",
   "at the playhead": "at the playhead",
   "audio effect": "efeito de áudio",

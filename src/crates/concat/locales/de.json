@@ -1,7 +1,4 @@
 {
-  "_": {
-    "name": "Deutsch"
-  },
   "1 stroke": "1 Strich",
   "10-bit colour": "10-Bit-Farbe",
   "127.0.0.1 is this machine only. Any other address is reachable from the network, needs a token, and is still not encrypted.": "127.0.0.1 ist nur dieser Rechner. Jede andere Adresse ist aus dem Netzwerk erreichbar, braucht ein Token und ist trotzdem nicht verschlüsselt.",
@@ -809,6 +806,7 @@
   "Sound alone, exactly as the site serves it. Nothing is re-encoded, so nothing is lost and it is immediate.": "Nur der Ton, genau wie die Seite ihn liefert. Nichts wird neu kodiert, also geht nichts verloren und es geht sofort.",
   "Sound alone, turned into an MP3. Opens anywhere, but it is encoded a second time and takes longer.": "Nur der Ton, als MP3. Öffnet sich überall, wird aber ein zweites Mal kodiert und dauert länger.",
   "Sound rendered to Generated › Processed": "Ton nach Generiert › Verarbeitet gerendert",
+  "Sounds": "Sounds",
   "Source": "Source",
   "Space": "Raum",
   "Spanish": "Spanisch",
@@ -1005,6 +1003,9 @@
   "Zoom in": "Vergrößern",
   "Zoom out": "Verkleinern",
   "Zoom to fit": "Einpassen",
+  "_": {
+    "name": "Deutsch"
+  },
   "almost done": "fast fertig",
   "at the playhead": "at the playhead",
   "audio effect": "Audioeffekt",

@@ -42,6 +42,9 @@ pub enum MediaOrigin {
     /// A clip's sound rendered as it played - trimmed, at its speed, with
     /// its level, fades and effects baked in - as a file of its own.
     Processed,
+    /// One of the sound effects the editor makes rather than ships; see
+    /// `concat_media::sfx`.
+    Sound,
 }
 
 /// What a clip can be - wider than [`MediaKind`] because a text clip has no

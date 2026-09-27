@@ -1,7 +1,4 @@
 {
-  "_": {
-    "name": "فارسی"
-  },
   "1 stroke": "1 حرکت",
   "10-bit colour": "رنگ 10-bit",
   "127.0.0.1 is this machine only. Any other address is reachable from the network, needs a token, and is still not encrypted.": "127.0.0.1 فقط همین دستگاه است. هر آدرس دیگری از طریق شبکه قابل دسترسی است، به Token نیاز دارد و همچنان رمزگذاری‌شده نیست.",
@@ -809,6 +806,7 @@
   "Sound alone, exactly as the site serves it. Nothing is re-encoded, so nothing is lost and it is immediate.": "فقط صدا، دقیقاً همان‌طور که سایت ارائه می‌دهد. چیزی دوباره کدگذاری نمی‌شود، پس چیزی از دست نمی‌رود و فوری است.",
   "Sound alone, turned into an MP3. Opens anywhere, but it is encoded a second time and takes longer.": "فقط صدا، تبدیل‌شده به MP3. همه‌جا باز می‌شود، اما بار دوم کدگذاری می‌شود و بیشتر طول می‌کشد.",
   "Sound rendered to Generated › Processed": "صدا در تولیدشده › پردازش‌شده رندر شد",
+  "Sounds": "صداها",
   "Source": "منبع",
   "Space": "فاصله",
   "Spanish": "اسپانیایی",
@@ -1005,6 +1003,9 @@
   "Zoom in": "بزرگ‌نمایی",
   "Zoom out": "کوچک‌نمایی",
   "Zoom to fit": "بزرگ‌نمایی متناسب",
+  "_": {
+    "name": "فارسی"
+  },
   "almost done": "تقریباً تمام شد",
   "at the playhead": "در نشانگر پخش",
   "audio effect": "صدا افکت",

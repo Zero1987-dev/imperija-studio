@@ -1,7 +1,4 @@
 {
-  "_": {
-    "name": "Русский"
-  },
   "1 stroke": "1 штрих",
   "10-bit colour": "10-битный цвет",
   "127.0.0.1 is this machine only. Any other address is reachable from the network, needs a token, and is still not encrypted.": "127.0.0.1 — только этот компьютер. Любой другой адрес доступен из сети, требует токен и всё равно не шифруется.",
@@ -809,6 +806,7 @@
   "Sound alone, exactly as the site serves it. Nothing is re-encoded, so nothing is lost and it is immediate.": "Только звук, ровно в том виде, в каком его отдаёт сайт. Ничего не перекодируется, значит ничего не теряется, и это мгновенно.",
   "Sound alone, turned into an MP3. Opens anywhere, but it is encoded a second time and takes longer.": "Только звук, превращённый в MP3. Открывается везде, но кодируется второй раз и занимает больше времени.",
   "Sound rendered to Generated › Processed": "Звук отрендерен в Созданное › Обработанное",
+  "Sounds": "Звуки",
   "Source": "Источник",
   "Space": "Пространство",
   "Spanish": "Испанский",
@@ -1005,6 +1003,9 @@
   "Zoom in": "Увеличить",
   "Zoom out": "Уменьшить",
   "Zoom to fit": "Вместить",
+  "_": {
+    "name": "Русский"
+  },
   "almost done": "почти готово",
   "at the playhead": "по курсору",
   "audio effect": "аудиоэффект",

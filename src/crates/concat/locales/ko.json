@@ -1,7 +1,4 @@
 {
-  "_": {
-    "name": "한국어"
-  },
   "1 stroke": "스트로크 1개",
   "10-bit colour": "10비트 색상",
   "127.0.0.1 is this machine only. Any other address is reachable from the network, needs a token, and is still not encrypted.": "127.0.0.1은 이 컴퓨터만입니다. 다른 주소는 네트워크에서 접근할 수 있고, 토큰이 필요하며, 그래도 암호화되지 않습니다.",
@@ -809,6 +806,7 @@
   "Sound alone, exactly as the site serves it. Nothing is re-encoded, so nothing is lost and it is immediate.": "소리만, 사이트가 제공하는 그대로. 다시 인코딩하지 않으므로 손실이 없고 즉시 끝납니다.",
   "Sound alone, turned into an MP3. Opens anywhere, but it is encoded a second time and takes longer.": "소리만 MP3로 변환합니다. 어디서나 열리지만 두 번째 인코딩이 들어가 더 오래 걸립니다.",
   "Sound rendered to Generated › Processed": "사운드를 생성됨 › 처리됨에 렌더링했습니다",
+  "Sounds": "사운드",
   "Source": "Source",
   "Space": "공간",
   "Spanish": "스페인어",
@@ -1005,6 +1003,9 @@
   "Zoom in": "확대",
   "Zoom out": "축소",
   "Zoom to fit": "화면에 맞추기",
+  "_": {
+    "name": "한국어"
+  },
   "almost done": "거의 완료",
   "at the playhead": "at the playhead",
   "audio effect": "오디오 효과",

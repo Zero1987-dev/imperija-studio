@@ -180,6 +180,26 @@ pub fn run() -> Result<(), slint::PlatformError> {
                 .collect::<Vec<_>>()
                 .as_slice(),
         ));
+        // The sound shelf, fixed for the life of the run: these are made
+        // from arithmetic, so the list is the same every time and nothing
+        // later touches it.
+        editor.set_catalogue_sounds(ModelRc::from(
+            concat_media::sfx::Sound::ALL
+                .iter()
+                .map(|sound| CatalogueEntryData {
+                    id: sound.id().into(),
+                    name: sound.label().into(),
+                    favourite: false,
+                    category: SharedString::new(),
+                    group: 0,
+                    // Its length, which is the one thing worth knowing
+                    // about a sound effect before hearing it.
+                    description: format!("{:.2} s", sound.seconds()).into(),
+                    art: slint::Image::default(),
+                })
+                .collect::<Vec<_>>()
+                .as_slice(),
+        ));
         let models = &shell.models;
         editor.set_timeline_tabs(ModelRc::from(models.tabs.clone()));
         editor.set_tracks(ModelRc::from(models.tracks.clone()));
@@ -620,6 +640,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
     editor.on_library_apply_audio(on_window!(|state, id: SharedString| {
         state.apply_catalogue(id.as_str(), false);
+    }));
+    editor.on_library_add_sound(on_window!(|state, id: SharedString| {
+        state.add_sound(id.as_str());
     }));
     editor.on_library_apply_transition(on_window!(|state, id: SharedString| {
         state.apply_transition(id.as_str());

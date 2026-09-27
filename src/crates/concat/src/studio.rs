@@ -5036,6 +5036,72 @@ impl Studio {
         );
     }
 
+    /// Lays one of the made sound effects on the timeline, at the playhead.
+    ///
+    /// Nothing is shipped or downloaded: the file is drawn from arithmetic
+    /// the first time it is asked for and kept afterwards, so laying the
+    /// same whoosh twenty times is twenty clips of one small file rather
+    /// than twenty files. Deleting the folder costs nothing; the next click
+    /// writes it again.
+    pub fn add_sound(&mut self, id: &str) {
+        let Some(sound) = concat_media::sfx::Sound::from_id(id) else {
+            return;
+        };
+        let dir = self.host.dirs.data.join("sounds");
+        let file = dir.join(format!("{}.wav", sound.id()));
+        if !file.is_file()
+            && let Err(error) = concat_media::sfx::write(sound, &dir)
+        {
+            self.notify(&tf("Could not render the sound: {0}", &[&error]), true);
+            return;
+        }
+        let path = file.to_string_lossy().into_owned();
+        let item = concat_project::commands::NewMedia {
+            path: path.clone(),
+            // Left in English on purpose: "Whoosh" and "Boom" are what
+            // these are called at the timeline in every language anybody
+            // cuts in, and translating them would make them harder to find
+            // rather than easier.
+            name: sound.label().to_owned(),
+            duration: Some(sound.seconds()),
+            kind: model::MediaKind::Audio,
+            width: None,
+            height: None,
+            frame_rate: None,
+            frame_rate_fraction: None,
+            video_codec: None,
+            audio_codec: Some("pcm_s16le".to_owned()),
+            has_audio: true,
+            audio_tracks: vec![model::AudioTrack {
+                index: 0,
+                codec: "pcm_s16le".to_owned(),
+                channels: 1,
+                sample_rate: concat_media::sfx::RATE,
+                title: String::new(),
+                language: String::new(),
+            }],
+            // Shelved apart from the imports, beside the read-aloud files.
+            origin: Some(model::MediaOrigin::Sound),
+        };
+        // Adding a path already in the bin is a no-op, so the id has to be
+        // looked up when the same sound is laid a second time.
+        let media_id = self.apply(Command::AddMedia { item }).or_else(|| {
+            self.project()
+                .media
+                .iter()
+                .find(|item| item.path == path)
+                .map(|item| item.id.clone())
+        });
+        let Some(media_id) = media_id else {
+            return;
+        };
+        // No notice: the clip appearing under the playhead says it.
+        self.apply(Command::AddClipAtFirstFree {
+            media_id,
+            start: self.playhead,
+        });
+    }
+
     /// Opens the Video Downloader sheet.
     pub fn open_downloader(&mut self) {
         self.downloader.open = true;

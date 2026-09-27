@@ -1,7 +1,4 @@
 {
-  "_": {
-    "name": "Hrvatski"
-  },
   "1 stroke": "1 potez",
   "10-bit colour": "10-bitna boja",
   "127.0.0.1 is this machine only. Any other address is reachable from the network, needs a token, and is still not encrypted.": "127.0.0.1 je samo ovo računalo. Svaka druga adresa dostupna je s mreže, treba token i svejedno nije šifrirana.",
@@ -809,6 +806,7 @@
   "Sound alone, exactly as the site serves it. Nothing is re-encoded, so nothing is lost and it is immediate.": "Samo zvuk, točno onakav kakav stranica poslužuje. Ništa se ne pretvara, pa se ništa ne gubi i ide odmah.",
   "Sound alone, turned into an MP3. Opens anywhere, but it is encoded a second time and takes longer.": "Samo zvuk, pretvoren u MP3. Otvara se svugdje, ali se kodira drugi put i traje dulje.",
   "Sound rendered to Generated › Processed": "Zvuk renderiran u Generirano › Obrađeno",
+  "Sounds": "Zvukovi",
   "Source": "Izvor",
   "Space": "Prostor",
   "Spanish": "španjolski",
@@ -1005,6 +1003,9 @@
   "Zoom in": "Uvećaj",
   "Zoom out": "Umanji",
   "Zoom to fit": "Povećaj da stane",
+  "_": {
+    "name": "Hrvatski"
+  },
   "almost done": "skoro gotovo",
   "at the playhead": "na playheadu",
   "audio effect": "zvučni efekt",

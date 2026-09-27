@@ -107,6 +107,8 @@ export global Editor {
     callback library-add-text(preset: string);
     callback library-apply-effect(effect-id: string);
     callback library-apply-transition(transition-id: string);
+    /// Lay one of the made sound effects at the playhead.
+    callback library-add-sound(sound-id: string);
     /// Filters page: lay the look down as a layer at the playhead.
     callback library-apply-filter(filter-id: string, label: string);
     /// Filters page: show the look over the whole picture without laying
@@ -144,6 +146,9 @@ export global Editor {
     in-out property <[CatalogueEntryData]> catalogue-filters;
     in-out property <[CatalogueEntryData]> catalogue-audio;
     in-out property <[CatalogueEntryData]> catalogue-transitions;
+    /// The sound effects the editor makes rather than ships. Fixed at
+    /// startup out of `concat_media::sfx`; nothing here ever changes it.
+    in-out property <[CatalogueEntryData]> catalogue-sounds;
     in-out property <[string]> effect-groups;
     in-out property <[string]> filter-groups;
     in-out property <[string]> audio-groups;

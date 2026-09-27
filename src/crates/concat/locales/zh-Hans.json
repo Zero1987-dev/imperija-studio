@@ -1,7 +1,4 @@
 {
-  "_": {
-    "name": "简体中文"
-  },
   "1 stroke": "1 笔",
   "10-bit colour": "10 位色彩",
   "127.0.0.1 is this machine only. Any other address is reachable from the network, needs a token, and is still not encrypted.": "127.0.0.1 仅限本机。其他任何地址都可从网络访问，需要令牌，而且仍然不加密。",
@@ -809,6 +806,7 @@
   "Sound alone, exactly as the site serves it. Nothing is re-encoded, so nothing is lost and it is immediate.": "仅声音，与网站提供的完全一致。不会重新编码，因此没有损失，而且立即完成。",
   "Sound alone, turned into an MP3. Opens anywhere, but it is encoded a second time and takes longer.": "仅声音，转换为 MP3。到哪里都能打开，但会二次编码，耗时更长。",
   "Sound rendered to Generated › Processed": "声音已渲染到“已生成 › 已处理”",
+  "Sounds": "音效",
   "Source": "Source",
   "Space": "空间",
   "Spanish": "西班牙语",
@@ -1005,6 +1003,9 @@
   "Zoom in": "放大",
   "Zoom out": "缩小",
   "Zoom to fit": "适应窗口",
+  "_": {
+    "name": "简体中文"
+  },
   "almost done": "即将完成",
   "at the playhead": "at the playhead",
   "audio effect": "音频效果",

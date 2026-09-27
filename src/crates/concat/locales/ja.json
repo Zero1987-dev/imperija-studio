@@ -1,7 +1,4 @@
 {
-  "_": {
-    "name": "日本語"
-  },
   "1 stroke": "1 ストローク",
   "10-bit colour": "10ビットカラー",
   "127.0.0.1 is this machine only. Any other address is reachable from the network, needs a token, and is still not encrypted.": "127.0.0.1 はこのマシンだけです。それ以外のアドレスはネットワークから到達でき、トークンが必要で、それでも暗号化はされません。",
@@ -809,6 +806,7 @@
   "Sound alone, exactly as the site serves it. Nothing is re-encoded, so nothing is lost and it is immediate.": "音声だけを、サイトが配信するそのままで。再エンコードしないので劣化がなく、すぐ終わります。",
   "Sound alone, turned into an MP3. Opens anywhere, but it is encoded a second time and takes longer.": "音声だけを MP3 に変換します。どこでも開けますが、二度目のエンコードが入るぶん時間がかかります。",
   "Sound rendered to Generated › Processed": "サウンドを「生成 › 処理済み」にレンダリングしました",
+  "Sounds": "サウンド",
   "Source": "Source",
   "Space": "空間",
   "Spanish": "スペイン語",
@@ -1005,6 +1003,9 @@
   "Zoom in": "拡大",
   "Zoom out": "縮小",
   "Zoom to fit": "全体を表示",
+  "_": {
+    "name": "日本語"
+  },
   "almost done": "まもなく完了",
   "at the playhead": "at the playhead",
   "audio effect": "オーディオエフェクト",

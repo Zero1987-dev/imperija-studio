@@ -1449,6 +1449,7 @@ export component MediaPane inherits Rectangle {
     in property <[CatalogueEntryData]> catalogue-audio;
     in property <[CatalogueEntryData]> catalogue-filters;
     in property <[CatalogueEntryData]> catalogue-transitions;
+    in property <[CatalogueEntryData]> catalogue-sounds;
     in property <[string]> effect-groups;
     in property <[string]> audio-groups;
     in property <[string]> filter-groups;
@@ -1458,6 +1459,7 @@ export component MediaPane inherits Rectangle {
     /// Catalogue pages: apply to the selected clip; Rust validates & explains.
     callback apply-effect(effect-id: string);
     callback apply-transition(transition-id: string);
+    callback add-sound(sound-id: string);
     /// Filters page: lay the look down as a layer at the playhead.
     callback apply-filter(filter-id: string, label: string);
     /// Filters page: a single click shows the look over the whole picture
@@ -1757,6 +1759,12 @@ export component MediaPane inherits Rectangle {
                             label: I18n.t("Templates");
                             current: root.tab == 5;
                             clicked => { root.tab = 5; }
+                        }
+                        LibraryTab {
+                            glyph: Glyph.waveform;
+                            label: I18n.t("Sounds");
+                            current: root.tab == 6;
+                            clicked => { root.tab = 6; }
                         }
                         // A tool, not a page: it opens a sheet and leaves
                         // the library where it was. Every tool we add sits
@@ -2209,6 +2217,22 @@ export component MediaPane inherits Rectangle {
                         // Transitions apply directly on single-click — no audition overlay.
                         auditions: false;
                         applied(id, label) => { root.apply-transition(id); }
+                    }
+                }
+
+                // No search box: twenty-seven cards fit on a screen, and a
+                // search over twenty-seven names is furniture.
+                if root.tab == 6: VerticalLayout {
+                    padding: 8px;
+
+                    ShelfGrid {
+                        entries: root.catalogue-sounds;
+                        glyph: Glyph.waveform;
+                        art(id) => { return root.art-of(id); }
+                        // One click lays it: there is nothing to preview
+                        // over the picture, and hearing it is playing it.
+                        auditions: false;
+                        applied(id, label) => { root.add-sound(id); }
                     }
                 }
 
