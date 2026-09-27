@@ -5428,7 +5428,7 @@ impl Studio {
                     .into_iter()
                     .collect(),
                 enabled: true,
-                ..model::AppliedFilter::default()
+                keys: Default::default(),
             });
             commands.push(Command::UpdateClip {
                 clip_id: id.to_owned(),
