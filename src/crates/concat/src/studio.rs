@@ -5330,6 +5330,92 @@ impl Studio {
     /// Puts a reframe's keys on clip `id` as one undo step: the three
     /// properties it drives are cleared first, so a second reframe replaces
     /// the first rather than fighting it.
+    /// Pushes the shot in wherever the speaker leans on a word.
+    ///
+    /// The move everybody recognises and nobody does by hand: a point is
+    /// made and the frame is suddenly closer, then eases back out. Two
+    /// keyframes a sentence over a twelve-minute podcast is why it does not
+    /// get done, and why a clip that has it reads as edited.
+    ///
+    /// Read from the clip's own loudness rather than from its words, so it
+    /// needs no transcript, no model and no language. See
+    /// `concat_host::punch` for what counts as a lean.
+    ///
+    /// Four keys a push, which is the shape of the move: out, in fast,
+    /// hold, out slowly. In lands like a cut because a push that drifts
+    /// arrives after the word it was for; out is a release, and a release
+    /// that snaps is a flinch.
+    pub fn punch_clip(&mut self, id: &str) {
+        use concat_host::punch::{EASE_OUT, PUNCH, SNAP};
+        use model::KeyProperty::Scale;
+
+        let Some(clip) = self.clip(id).cloned() else {
+            return;
+        };
+        if clip.kind != model::ClipKind::Video {
+            return;
+        }
+        let Some(path) = self
+            .project()
+            .media_by_id(&clip.media_id)
+            .map(|item| item.path.clone())
+        else {
+            return;
+        };
+        self.flush_commit();
+
+        // Timeline seconds are source seconds divided by the rate, so the
+        // stretch of file a slowed clip covers is the longer one.
+        let span = clip.duration * clip.speed.max(0.01);
+        let beats = match concat_host::punch::beats_of(
+            &path,
+            clip.source_start,
+            span,
+            clip.audio_stream.map(|index| index as usize),
+        ) {
+            Ok(beats) => beats,
+            Err(error) => {
+                self.notify(&error, true);
+                return;
+            }
+        };
+        if beats.is_empty() {
+            self.notify(&t("Nothing to push in on"), false);
+            return;
+        }
+
+        // Where the shot sits now. A reframe leaves one scale across the
+        // whole clip, so there is a single number to push away from; a clip
+        // that was never reframed has its own.
+        let base = clip
+            .keys_on(Scale)
+            .next()
+            .map_or(clip.scale, |key| key.value);
+        let at = |seconds: f64| (seconds / span).clamp(0.0, 1.0);
+        let mut commands = vec![Command::ClearClipKeys {
+            clip_id: id.to_owned(),
+            property: Scale,
+        }];
+        for beat in &beats {
+            for (when, value) in [
+                (beat.at - SNAP, base),
+                (beat.at, base * PUNCH),
+                ((beat.until - EASE_OUT).max(beat.at), base * PUNCH),
+                (beat.until, base),
+            ] {
+                commands.push(Command::SetClipKey {
+                    clip_id: id.to_owned(),
+                    property: Scale,
+                    at: at(when),
+                    value,
+                    ease: model::KeyEase::default(),
+                });
+            }
+        }
+        self.apply(Command::Batch { commands });
+        self.notify(&tf("{0} pushes", &[&beats.len()]), false);
+    }
+
     /// Lays the whole width of the picture across the frame, over a
     /// blurred copy of itself.
     ///
@@ -8164,6 +8250,15 @@ impl Studio {
                 "",
                 !locked && clip.kind == model::ClipKind::Video && self.reframe_jobs.is_empty(),
             ),
+            // The move that makes a clip read as edited. Sound only, so it
+            // works on a clip with no transcript and in any language.
+            action(
+                "punch",
+                t("Push in on emphasis"),
+                Glyph::Sparkle,
+                "",
+                !locked && clip.kind == model::ClipKind::Video,
+            ),
             // The other way to make a wide shot tall, and the sharp one:
             // the whole width laid across, letterboxed, rather than a third
             // of it enlarged. Nothing to analyse, so never greyed for a job.
@@ -8754,6 +8849,7 @@ impl Studio {
             "enhance" => self.enhance_clip(id),
             "reframe" => self.reframe_clip(id),
             "fill-width" => self.fill_width_clip(id),
+            "punch" => self.punch_clip(id),
             "render-sound" => self.render_clip_sound(id),
             "detach" => {
                 self.apply(Command::DetachAudio {

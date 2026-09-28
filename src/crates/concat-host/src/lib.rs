@@ -35,6 +35,7 @@ pub mod playback;
 pub mod preview;
 pub mod projects;
 pub mod proxy;
+pub mod punch;
 pub mod reframe;
 pub mod session;
 pub mod templates;
