@@ -304,8 +304,7 @@ pub fn format_for(request: &FetchRequest) -> String {
 pub fn complaint_in(said: &str) -> Option<String> {
     said.lines()
         .map(str::trim)
-        .filter(|line| line.starts_with("ERROR:"))
-        .next_back()
+        .rfind(|line| line.starts_with("ERROR:"))
         .map(|line| line.trim_start_matches("ERROR:").trim().to_owned())
         .filter(|line| !line.is_empty())
 }
