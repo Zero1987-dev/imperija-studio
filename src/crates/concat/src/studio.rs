@@ -5330,6 +5330,110 @@ impl Studio {
     /// Puts a reframe's keys on clip `id` as one undo step: the three
     /// properties it drives are cleared first, so a second reframe replaces
     /// the first rather than fighting it.
+    /// Takes the pauses out.
+    ///
+    /// Dead air is what makes a clip feel long. The same words with the
+    /// pauses gone are often a third less time and hold far better, and it
+    /// is the one edit that is pure tedium by hand: forty cuts over five
+    /// minutes, each one found by ear.
+    ///
+    /// **Every unlocked track is cut, not only this clip.** A picture
+    /// shortened while its captions stay where they were is a clip pulled
+    /// apart, so each cut lands across the timeline and the deletion closes
+    /// the gap on all of them together.
+    ///
+    /// Worked right to left, because a cut made later does not move what is
+    /// before it and a cut made earlier moves everything after.
+    pub fn jump_cut_clip(&mut self, id: &str) {
+        let Some(clip) = self.clip(id).cloned() else {
+            return;
+        };
+        if clip.kind != model::ClipKind::Video {
+            return;
+        }
+        let Some(path) = self
+            .project()
+            .media_by_id(&clip.media_id)
+            .map(|item| item.path.clone())
+        else {
+            return;
+        };
+        self.flush_commit();
+
+        let speed = clip.speed.max(0.01);
+        let span = clip.duration * speed;
+        let gaps = match concat_host::gaps::gaps_of(
+            &path,
+            clip.source_start,
+            span,
+            clip.audio_stream.map(|index| index as usize),
+        ) {
+            Ok(gaps) => gaps,
+            Err(error) => {
+                self.notify(&error, true);
+                return;
+            }
+        };
+        if gaps.is_empty() {
+            self.notify(&t("No pauses to take out"), false);
+            return;
+        }
+        let saved: f64 = gaps.iter().map(|gap| gap.length() / speed).sum();
+        let count = gaps.len();
+
+        for gap in gaps.iter().rev() {
+            let from = clip.start + gap.from / speed;
+            let to = clip.start + gap.to / speed;
+            self.cut_across(to);
+            self.cut_across(from);
+            let doomed: Vec<String> = self
+                .timeline()
+                .clips
+                .iter()
+                .filter(|other| !self.locked(&other.track_id))
+                .filter(|other| {
+                    other.start >= from - 1e-6 && other.start + other.duration <= to + 1e-6
+                })
+                .map(|other| other.id.clone())
+                .collect();
+            if !doomed.is_empty() {
+                self.apply(Command::RemoveClips {
+                    clip_ids: doomed,
+                    ripple: true,
+                });
+            }
+        }
+        self.notify(
+            &tf(
+                "{0} pauses out, {1}s shorter",
+                &[&count, &format!("{saved:.1}")],
+            ),
+            false,
+        );
+    }
+
+    /// Splits everything spanning one moment, on every unlocked track.
+    ///
+    /// One cut across the whole timeline rather than one on a clip: the
+    /// picture, the captions and anything laid under them have to part in
+    /// the same place or they do not go back together.
+    fn cut_across(&mut self, at: f64) {
+        let ids: Vec<String> = self
+            .timeline()
+            .clips
+            .iter()
+            .filter(|clip| !self.locked(&clip.track_id))
+            .filter(|clip| clip.start + 1e-6 < at && at < clip.start + clip.duration - 1e-6)
+            .map(|clip| clip.id.clone())
+            .collect();
+        if !ids.is_empty() {
+            self.apply(Command::SplitClips {
+                clip_ids: ids,
+                time: at,
+            });
+        }
+    }
+
     /// Pushes the shot in wherever the speaker leans on a word.
     ///
     /// The move everybody recognises and nobody does by hand: a point is
@@ -8250,6 +8354,16 @@ impl Studio {
                 "",
                 !locked && clip.kind == model::ClipKind::Video && self.reframe_jobs.is_empty(),
             ),
+            // The other half of the pace: the pauses out. Cuts across every
+            // unlocked track, so it is offered on the picture and moves the
+            // captions with it.
+            action(
+                "jump-cut",
+                t("Cut out pauses"),
+                Glyph::Split,
+                "",
+                !locked && clip.kind == model::ClipKind::Video,
+            ),
             // The move that makes a clip read as edited. Sound only, so it
             // works on a clip with no transcript and in any language.
             action(
@@ -8850,6 +8964,7 @@ impl Studio {
             "reframe" => self.reframe_clip(id),
             "fill-width" => self.fill_width_clip(id),
             "punch" => self.punch_clip(id),
+            "jump-cut" => self.jump_cut_clip(id),
             "render-sound" => self.render_clip_sound(id),
             "detach" => {
                 self.apply(Command::DetachAudio {

@@ -27,6 +27,7 @@ pub mod download;
 pub mod drive;
 pub mod enhance;
 pub mod export;
+pub mod gaps;
 pub mod jobs;
 pub mod logs;
 pub mod media;
