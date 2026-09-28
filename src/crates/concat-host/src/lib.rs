@@ -32,6 +32,7 @@ pub mod jobs;
 pub mod logs;
 pub mod media;
 pub mod models;
+pub mod pexels;
 pub mod playback;
 pub mod preview;
 pub mod projects;
