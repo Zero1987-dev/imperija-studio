@@ -812,6 +812,7 @@ pub struct Studio {
     /// The Video Downloader sheet: what is typed into it and what the
     /// fetch it started is doing.
     downloader: DownloaderSheet,
+    broll: BrollSheet,
     /// The smart stroke being read, by the same name, while one is.
     region_job: Option<String>,
     /// The last smart stroke as the stage drew it, kept on screen from the
@@ -1508,6 +1509,7 @@ impl Studio {
             cutout_jobs: HashMap::new(),
             enhance_jobs: HashMap::new(),
             reframe_jobs: HashMap::new(),
+            broll: BrollSheet::default(),
             downloader: DownloaderSheet {
                 tidy_end: true,
                 ..DownloaderSheet::default()
@@ -5170,6 +5172,155 @@ impl Studio {
             .play(concat_media::sfx::render(sound), concat_media::sfx::RATE);
     }
 
+    /// Opens the B-roll sheet.
+    pub fn open_broll(&mut self) {
+        self.broll.open = true;
+        self.broll.message.clear();
+    }
+
+    /// Closes it. A search or a download already out is left to finish.
+    pub fn close_broll(&mut self) {
+        self.broll.open = false;
+    }
+
+    /// Remembers the person's own Pexels key.
+    ///
+    /// Written to the preferences file the moment it changes, because a key
+    /// typed once and lost to a crash is a trip back to a website.
+    pub fn broll_key(&mut self, key: &str) {
+        let key = key.trim();
+        self.prefs.pexels_key = (!key.is_empty()).then(|| key.to_owned());
+        self.prefs.save(&self.host.dirs);
+        self.broll.message.clear();
+    }
+
+    /// What is being looked for, as typed.
+    pub fn broll_query(&mut self, words: &str) {
+        self.broll.query = words.to_owned();
+    }
+
+    /// Asks Pexels, and fetches a still for each answer.
+    ///
+    /// On a worker: it is two network trips deep and the window has to stay
+    /// up. The stills are best-effort - a card without one still says what
+    /// the clip is and still adds it.
+    pub fn broll_search(&mut self) {
+        if self.broll.searching || self.broll.adding {
+            return;
+        }
+        let Some(key) = self.prefs.pexels_key.clone() else {
+            self.broll.message = t("Paste your Pexels key first");
+            return;
+        };
+        let words = self.broll.query.trim().to_owned();
+        if words.is_empty() {
+            return;
+        }
+        self.broll.searching = true;
+        self.broll.message.clear();
+        self.broll.hits.clear();
+
+        let stills = self.host.dirs.data.join("broll-stills");
+        spawn(
+            move || -> Result<Vec<BrollHit>, String> {
+                let found = concat_host::pexels::search(&key, &words, 1)?;
+                Ok(found
+                    .into_iter()
+                    .map(|found| {
+                        let still = (!found.still.is_empty())
+                            .then(|| {
+                                concat_host::pexels::fetch(&found.still, &stills, &mut |_, _| {})
+                                    .ok()
+                            })
+                            .flatten();
+                        BrollHit { found, still }
+                    })
+                    .collect())
+            },
+            |studio, _, _, result| {
+                studio.broll.searching = false;
+                match result {
+                    Ok(hits) if hits.is_empty() => {
+                        studio.broll.message = t("Nothing found for that");
+                    }
+                    Ok(hits) => studio.broll.hits = hits,
+                    Err(error) => {
+                        log::warn!("b-roll: {error}");
+                        studio.broll.message = error;
+                    }
+                }
+            },
+        );
+    }
+
+    /// Brings one cutaway down and lays it at the playhead.
+    ///
+    /// On a lane of its own above the picture, because that is what a
+    /// cutaway is: something laid over what is already there, for as long
+    /// as it runs.
+    pub fn broll_add(&mut self, index: i32) {
+        if self.broll.adding || self.broll.searching {
+            return;
+        }
+        let Some(hit) = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.broll.hits.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(session) = self.session.as_ref() else {
+            self.broll.message = t("Save the project first, so the video has somewhere to live");
+            return;
+        };
+        let into = std::path::PathBuf::from(session.path()).join("media");
+        self.broll.adding = true;
+        self.broll.progress = 0.0;
+        self.broll.message.clear();
+
+        let url = hit.found.file.clone();
+        let epoch = crate::host::project_epoch();
+        spawn_in_project(
+            move || -> Result<concat_host::media::MediaSummary, String> {
+                let file = concat_host::pexels::fetch(&url, &into, &mut |had, total| {
+                    if total == 0 {
+                        return;
+                    }
+                    let fraction = had as f32 / total as f32;
+                    on_ui_in_project(epoch, move |studio, _, _| {
+                        studio.broll.progress = fraction;
+                    });
+                })?;
+                concat_host::media::probe(&file.to_string_lossy())
+            },
+            |studio, _, _, result| {
+                studio.broll.adding = false;
+                studio.broll.progress = 0.0;
+                match result {
+                    Ok(summary) => {
+                        let item = summary.to_new_media();
+                        let media_id = studio.apply(Command::AddMedia { item });
+                        let Some(media_id) = media_id else { return };
+                        // A lane of its own, above: a cutaway covers the
+                        // picture rather than replacing it.
+                        if let Some(lane) = studio.apply(Command::AddTrack) {
+                            studio.apply(Command::AddClip {
+                                media_id,
+                                track_id: lane,
+                                start: f64::from(studio.playhead),
+                                ripple: false,
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("b-roll: {error}");
+                        studio.broll.message = error;
+                    }
+                }
+            },
+        );
+    }
+
     /// Opens the Video Downloader sheet.
     pub fn open_downloader(&mut self) {
         self.downloader.open = true;
@@ -8263,6 +8414,36 @@ impl Studio {
                 .collect(),
         );
         app.set_captions(self.captions.data(self));
+        app.set_broll(BrollSheetData {
+            open: self.broll.open,
+            key: self.prefs.pexels_key.as_deref().unwrap_or_default().into(),
+            query: self.broll.query.as_str().into(),
+            searching: self.broll.searching,
+            adding: self.broll.adding,
+            progress: self.broll.progress,
+            message: self.broll.message.as_str().into(),
+            hits: ModelRc::from(
+                self.broll
+                    .hits
+                    .iter()
+                    .map(|hit| BrollHitData {
+                        by: hit.found.by.as_str().into(),
+                        // Built here so the sheet does no arithmetic.
+                        size: format!(
+                            "{} × {} · {:.0} s",
+                            hit.found.width, hit.found.height, hit.found.seconds
+                        )
+                        .into(),
+                        still: hit
+                            .still
+                            .as_ref()
+                            .and_then(|path| slint::Image::load_from_path(path).ok())
+                            .unwrap_or_default(),
+                    })
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            ),
+        });
         app.set_downloader(DownloaderSheetData {
             open: self.downloader.open,
             url: self.downloader.url.as_str().into(),
@@ -9131,6 +9312,37 @@ impl Studio {
 
 /// What the Video Downloader sheet holds between openings.
 ///
+/// One cutaway the search found, and the still fetched for its card.
+#[derive(Clone, Debug)]
+pub struct BrollHit {
+    /// What Pexels said about it.
+    pub found: concat_host::pexels::Found,
+    /// Where the thumbnail landed, when it did. A card with no picture is
+    /// a worse card, not a missing one.
+    pub still: Option<std::path::PathBuf>,
+}
+
+/// The B-roll sheet: a key, a search, and what came back.
+#[derive(Clone, Debug, Default)]
+pub struct BrollSheet {
+    /// The sheet is up.
+    pub open: bool,
+    /// What was typed.
+    pub query: String,
+    /// A search is out.
+    pub searching: bool,
+    /// A cutaway is coming down, and how far along it is.
+    pub adding: bool,
+    /// `0..1`.
+    pub progress: f32,
+    /// Why the last attempt failed, or what to do about the key. Kept in
+    /// the sheet rather than shown as a toast that is gone before it has
+    /// been read.
+    pub message: String,
+    /// What the last search found.
+    pub hits: Vec<BrollHit>,
+}
+
 /// The choices are remembered for the session: someone cutting podcasts
 /// asks for the same thing every time, and re-picking 1080p on every link
 /// is the kind of small tax that makes a tool feel unfinished.

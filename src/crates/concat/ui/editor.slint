@@ -84,6 +84,8 @@ export global Editor {
     callback import-media();
     /// The Library's Downloader tool: opens the sheet.
     callback open-downloader();
+    /// The B-roll tool: a sheet, like the downloader.
+    callback open-broll();
     callback media-filter-changed(filter: MediaFilter);
     callback media-sort-changed(index: int);
     callback media-select(id: int, additive: bool);

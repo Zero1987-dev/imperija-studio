@@ -27,6 +27,7 @@ import { ProjectDialog, ProjectSheetData } from "dialogs/project.slint";
 import { RelinkDialog, RelinkData, MissingMediaItem } from "dialogs/relink.slint";
 import { CaptionsDialog, CaptionsSheetData } from "dialogs/captions.slint";
 import { DownloaderDialog, DownloaderSheetData } from "dialogs/downloader.slint";
+import { BrollDialog, BrollSheetData, BrollHitData } from "dialogs/broll.slint";
 import { SpeechDialog, SpeechSheetData } from "dialogs/speech.slint";
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { Editor } from "editor.slint";
@@ -244,6 +245,8 @@ export component App inherits Window {
     in property <CaptionsSheetData> captions;
     /// The Video Downloader sheet: a link and what to make of it.
     in property <DownloaderSheetData> downloader;
+    /// The B-roll sheet: a key, a search, and what came back.
+    in property <BrollSheetData> broll;
     in property <[string]> caption-models;
     callback captions-closed();
     callback captions-text-edited(text: string);
@@ -253,6 +256,12 @@ export component App inherits Window {
     callback captions-size-changed(index: int);
     callback captions-begin();
     callback captions-cancel();
+    callback broll-closed();
+    callback broll-key-edited(text: string);
+    callback broll-query-edited(text: string);
+    callback broll-search();
+    callback broll-add(index: int);
+
     callback downloader-closed();
     callback downloader-url-edited(text: string);
     callback downloader-quality-changed(index: int);
@@ -625,6 +634,20 @@ export component App inherits Window {
         size-changed(index) => { root.captions-size-changed(index); }
         begin => { root.captions-begin(); }
         cancel => { root.captions-cancel(); }
+    }
+
+    BrollDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        data: root.broll;
+
+        closed => { root.broll-closed(); }
+        key-changed(text) => { root.broll-key-edited(text); }
+        query-changed(text) => { root.broll-query-edited(text); }
+        search => { root.broll-search(); }
+        add(index) => { root.broll-add(index); }
     }
 
     DownloaderDialog {

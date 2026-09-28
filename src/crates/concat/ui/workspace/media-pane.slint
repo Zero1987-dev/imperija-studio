@@ -1421,6 +1421,7 @@ export component MediaPane inherits Rectangle {
 
     callback import-media();
     callback open-downloader();
+    callback open-broll();
     callback filter-changed(filter: MediaFilter);
     /// The sort dropdown beside the import button picked a new order.
     callback sort-changed(index: int);
@@ -1775,6 +1776,12 @@ export component MediaPane inherits Rectangle {
                             label: I18n.t("Video Downloader");
                             current: false;
                             clicked => { root.open-downloader(); }
+                        }
+                        LibraryTab {
+                            glyph: Glyph.film;
+                            label: I18n.t("B-roll");
+                            current: false;
+                            clicked => { root.open-broll(); }
                         }
                     }
                 }

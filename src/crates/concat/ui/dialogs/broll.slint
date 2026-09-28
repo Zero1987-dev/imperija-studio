@@ -1,0 +1,213 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 TikTok Imperija
+//
+// B-roll: the one thing the editor cannot make out of what it already has.
+// A podcast clip is one shot of one person; a cutaway has to come from
+// somewhere, and Pexels gives it away.
+//
+// The key is the person's own and lives on their machine. Pexels' API terms
+// ask for a visible link back, which the footer carries - their content
+// licence does not require crediting the photographer, and the credit is
+// there anyway because it costs nothing.
+
+import { I18n } from "../i18n.slint";
+import { Theme } from "../theme/theme.slint";
+import { Glyph, Icon } from "../icons.slint";
+import { Button, DialogSection, Field, Modal, Progress } from "../primitives/modal.slint";
+
+/// One cutaway, as the sheet shows it.
+export struct BrollHitData {
+    /// Who shot it.
+    by: string,
+    /// "1080 × 1920 · 12 s", built in Rust so the sheet does no arithmetic.
+    size: string,
+    /// The thumbnail, when one came down.
+    still: image,
+}
+
+/// What the sheet is showing.
+export struct BrollSheetData {
+    open: bool,
+    /// The person's own Pexels key, as Rust last set it.
+    key: string,
+    /// What is being looked for.
+    query: string,
+    /// A search is out.
+    searching: bool,
+    /// A cutaway is coming down.
+    adding: bool,
+    /// `0..1`.
+    progress: float,
+    /// What went wrong, or what to do about the key.
+    message: string,
+    /// What the last search found.
+    hits: [BrollHitData],
+}
+
+/// One card: the still, who shot it, and what it is.
+component HitCard inherits Rectangle {
+    in property <BrollHitData> hit;
+    in property <bool> busy;
+    callback add();
+
+    height: 92px;
+    background: touch.has-hover && !root.busy ? Theme.raised : transparent;
+    border-radius: Theme.r-sm;
+
+    touch := TouchArea {
+        enabled: !root.busy;
+        clicked => { root.add(); }
+    }
+
+    HorizontalLayout {
+        padding: 6px;
+        spacing: 10px;
+
+        // 9:16, because that is what was asked for and what the frame is.
+        Rectangle {
+            width: 45px;
+            background: Theme.well;
+            border-radius: Theme.r-xs;
+            clip: true;
+
+            Image {
+                source: root.hit.still;
+                image-fit: cover;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+
+            Text {
+                text: root.hit.size;
+                color: Theme.fg;
+                font-size: Theme.fs-sm;
+                font-weight: Theme.weight-title;
+            }
+
+            Text {
+                text: root.hit.by;
+                color: Theme.fg-muted;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+        }
+
+        Rectangle { horizontal-stretch: 1; }
+
+        Rectangle {
+            width: 28px;
+            height: 28px;
+            y: (parent.height - self.height) / 2;
+
+            Icon {
+                glyph: Glyph.plus;
+                size: 16px;
+                tint: touch.has-hover ? Theme.accent : Theme.fg-muted;
+            }
+        }
+    }
+}
+
+export component BrollDialog inherits Modal {
+    in property <BrollSheetData> data;
+
+    callback key-changed(text: string);
+    callback query-changed(text: string);
+    callback search();
+    callback add(index: int);
+
+    property <bool> busy: root.data.searching || root.data.adding;
+
+    open: root.data.open;
+    title: I18n.t("B-roll");
+    glyph: Glyph.film;
+    surface-width: 440px;
+    dismissable: !root.busy;
+
+    VerticalLayout {
+        DialogSection {
+            first: true;
+            title: I18n.t("Pexels key");
+
+            Field {
+                value: root.data.key;
+                technical: true;
+                secret: true;
+                placeholder: "••••••••";
+                edited(text) => { root.key-changed(text); }
+            }
+
+            Text {
+                text: I18n.t("Free, and yours instantly from a Pexels account. It stays on this machine.");
+                color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+        }
+
+        DialogSection {
+            title: I18n.t("Search");
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                Field {
+                    horizontal-stretch: 1;
+                    value: root.data.query;
+                    placeholder: I18n.t("city at night, coffee, typing…");
+                    edited(text) => { root.query-changed(text); }
+                }
+
+                Button {
+                    label: root.data.searching ? I18n.t("Searching…") : I18n.t("Search");
+                    primary: true;
+                    enabled: !root.busy && root.data.key != "";
+                    clicked => { root.search(); }
+                }
+            }
+
+            if root.data.message != "": Text {
+                text: root.data.message;
+                color: Theme.danger;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+
+            if root.data.adding: Progress {
+                value: root.data.progress;
+            }
+        }
+
+        if root.data.hits.length > 0: DialogSection {
+            title: I18n.t("Click one to lay it at the playhead");
+
+            Flickable {
+                height: min(root.data.hits.length * 92px, 276px);
+                viewport-height: root.data.hits.length * 92px;
+
+                VerticalLayout {
+                    alignment: start;
+
+                    for hit[index] in root.data.hits: HitCard {
+                        hit: hit;
+                        busy: root.busy;
+                        add => { root.add(index); }
+                    }
+                }
+            }
+
+            // Their API terms ask for this, and it is where the footage is
+            // from, which is worth saying either way.
+            Text {
+                text: "Pexels — pexels.com";
+                color: Theme.fg-muted;
+                font-size: Theme.fs-xs;
+            }
+        }
+    }
+}

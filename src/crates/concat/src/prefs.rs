@@ -30,6 +30,10 @@ pub struct Preferences {
     pub tts_voice: Option<i32>,
     /// The interface's locale code ("de", "pt-BR", ...); absent is English.
     pub locale: Option<String>,
+    /// The person's own Pexels key, for the b-roll sheet. Theirs, got
+    /// instantly from a Pexels account, and kept here rather than proxied
+    /// through anything of ours.
+    pub pexels_key: Option<String>,
     /// Package ids starred in the effect libraries, in no order. One list
     /// across all three shelves: a star is a fact about a package, and which
     /// library it happens to be filed in is not part of it.

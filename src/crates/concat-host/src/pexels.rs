@@ -180,6 +180,62 @@ pub fn search(key: &str, words: &str, page: u32) -> Result<Vec<Found>, String> {
     found_in(&body)
 }
 
+/// Fetches one file, answering with where it landed.
+///
+/// Written beside its own name under `into`, which for a cutaway is the
+/// project's media folder and for a still is a cache nobody looks at. Not
+/// resumable and not cancellable: a Pexels file is seconds of video and a
+/// still is a few kilobytes, and machinery for stopping them would be
+/// larger than they are.
+pub fn fetch(
+    url: &str,
+    into: &std::path::Path,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<std::path::PathBuf, String> {
+    use std::io::{Read, Write};
+
+    let name = url
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty() && !name.contains('?'))
+        .unwrap_or("pexels.mp4");
+    std::fs::create_dir_all(into)
+        .map_err(|error| format!("could not make {}: {error}", into.display()))?;
+    let file = into.join(name);
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(20))
+        .timeout_read(std::time::Duration::from_secs(60))
+        .build();
+    let response = agent
+        .get(url)
+        .call()
+        .map_err(|error| format!("{url} did not answer: {error}"))?;
+    let total = response
+        .header("Content-Length")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let mut source = response.into_reader();
+    let mut sink = std::fs::File::create(&file)
+        .map_err(|error| format!("could not write {}: {error}", file.display()))?;
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut had = 0u64;
+    loop {
+        let read = source
+            .read(&mut buffer)
+            .map_err(|error| format!("{url} stopped: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        sink.write_all(&buffer[..read])
+            .map_err(|error| format!("could not write {}: {error}", file.display()))?;
+        had += read as u64;
+        progress(had, total);
+    }
+    Ok(file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

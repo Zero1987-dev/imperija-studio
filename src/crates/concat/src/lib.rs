@@ -619,6 +619,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     editor.on_open_downloader(on_window!(|state| {
         state.open_downloader();
     }));
+    editor.on_open_broll(on_window!(|state| {
+        state.open_broll();
+    }));
     editor.on_media_activate(on_window!(|state, id: i32| {
         state.place_at_playhead(&format!("media:{id}"));
     }));
@@ -1349,6 +1352,21 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
     app.on_downloader_closed(on_window!(|state| {
         state.close_downloader();
+    }));
+    app.on_broll_closed(on_window!(|state| {
+        state.close_broll();
+    }));
+    app.on_broll_key_edited(on_window!(|state, text: SharedString| {
+        state.broll_key(text.as_str());
+    }));
+    app.on_broll_query_edited(on_window!(|state, text: SharedString| {
+        state.broll_query(text.as_str());
+    }));
+    app.on_broll_search(on_window!(|state| {
+        state.broll_search();
+    }));
+    app.on_broll_add(on_window!(|state, index: i32| {
+        state.broll_add(index);
     }));
     app.on_downloader_url_edited(on_window!(|state, text: SharedString| {
         state.downloader_url(text.as_str());
