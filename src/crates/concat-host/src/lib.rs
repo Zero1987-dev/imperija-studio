@@ -19,6 +19,7 @@
 //! and cancels through flags, and the caller decides which thread it runs on.
 
 pub mod audition;
+pub mod broll;
 pub mod brush;
 pub mod captions;
 pub mod cutout;

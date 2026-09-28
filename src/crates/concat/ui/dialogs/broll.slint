@@ -120,6 +120,8 @@ export component BrollDialog inherits Modal {
     callback query-changed(text: string);
     callback search();
     callback add(index: int);
+    /// Fill the clip from what the captions say, rather than one at a time.
+    callback fill();
 
     property <bool> busy: root.data.searching || root.data.adding;
 
@@ -180,6 +182,23 @@ export component BrollDialog inherits Modal {
 
             if root.data.adding: Progress {
                 value: root.data.progress;
+            }
+        }
+
+        DialogSection {
+            title: I18n.t("Or do the whole clip");
+
+            Button {
+                label: I18n.t("Fill from the captions");
+                enabled: !root.busy && root.data.key != "";
+                clicked => { root.fill(); }
+            }
+
+            Text {
+                text: I18n.t("Reads what each caption says, finds a cutaway for it, and lays them on a lane of their own. A guess you can delete.");
+                color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
             }
         }
 

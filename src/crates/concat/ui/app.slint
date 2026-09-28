@@ -261,6 +261,7 @@ export component App inherits Window {
     callback broll-query-edited(text: string);
     callback broll-search();
     callback broll-add(index: int);
+    callback broll-fill();
 
     callback downloader-closed();
     callback downloader-url-edited(text: string);
@@ -648,6 +649,7 @@ export component App inherits Window {
         query-changed(text) => { root.broll-query-edited(text); }
         search => { root.broll-search(); }
         add(index) => { root.broll-add(index); }
+        fill => { root.broll-fill(); }
     }
 
     DownloaderDialog {

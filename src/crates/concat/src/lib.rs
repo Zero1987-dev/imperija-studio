@@ -1368,6 +1368,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     app.on_broll_add(on_window!(|state, index: i32| {
         state.broll_add(index);
     }));
+    app.on_broll_fill(on_window!(|state| {
+        state.broll_auto();
+    }));
     app.on_downloader_url_edited(on_window!(|state, text: SharedString| {
         state.downloader_url(text.as_str());
     }));

@@ -5253,6 +5253,136 @@ impl Studio {
         );
     }
 
+    /// Fills the clip with cutaways, read from the captions already on it.
+    ///
+    /// Searching for footage and dropping it in is half the work, and the
+    /// captions already say what is being talked about and when. What word
+    /// to search for is a guess - see `concat_host::broll` - and the
+    /// cutaways land as ordinary clips on a lane of their own, which is one
+    /// key to delete. That is the whole answer to a guess that missed, and
+    /// a better answer than not guessing.
+    pub fn broll_auto(&mut self) {
+        if self.broll.adding || self.broll.searching {
+            return;
+        }
+        let Some(key) = self.prefs.pexels_key.clone() else {
+            self.broll.message = t("Paste your Pexels key first");
+            return;
+        };
+        let Some(session) = self.session.as_ref() else {
+            self.broll.message = t("Save the project first, so the video has somewhere to live");
+            return;
+        };
+        let into = std::path::PathBuf::from(session.path()).join("media");
+
+        let captions: Vec<(f64, f64, String)> = self
+            .timeline()
+            .clips
+            .iter()
+            .filter(|clip| clip.kind == model::ClipKind::Text)
+            .filter_map(|clip| {
+                let text = clip.text.as_ref()?;
+                (!text.content.trim().is_empty())
+                    .then(|| (clip.start, clip.start + clip.duration, text.content.clone()))
+            })
+            .collect();
+        if captions.is_empty() {
+            self.broll.message = t("Make the captions first - the cutaways are read from them");
+            return;
+        }
+        let cues = concat_host::broll::cues(
+            &captions,
+            concat_host::broll::APART,
+            concat_host::broll::LENGTH,
+        );
+        if cues.is_empty() {
+            self.broll.message = t("Nothing in the captions to illustrate");
+            return;
+        }
+
+        self.broll.adding = true;
+        self.broll.progress = 0.0;
+        self.broll.message.clear();
+        let epoch = crate::host::project_epoch();
+        spawn_in_project(
+            move || -> Vec<(concat_host::broll::Cue, std::path::PathBuf)> {
+                let total = cues.len() as f32;
+                let mut got = Vec::new();
+                for (done, cue) in cues.into_iter().enumerate() {
+                    // Best-effort, one by one: a word with no footage behind
+                    // it costs that one cutaway and not the run.
+                    if let Ok(found) = concat_host::pexels::search(&key, &cue.words, 1)
+                        && let Some(first) = found.first()
+                        && let Ok(file) =
+                            concat_host::pexels::fetch(&first.file, &into, &mut |_, _| {})
+                    {
+                        got.push((cue, file));
+                    }
+                    let fraction = (done + 1) as f32 / total;
+                    on_ui_in_project(epoch, move |studio, _, _| {
+                        studio.broll.progress = fraction;
+                    });
+                }
+                got
+            },
+            |studio, _, _, got| {
+                studio.broll.adding = false;
+                studio.broll.progress = 0.0;
+                if got.is_empty() {
+                    studio.broll.message = t("Nothing found for any of it");
+                    return;
+                }
+                // One lane for all of them, so taking the cutaways off again
+                // is selecting a lane rather than hunting them down.
+                let Some(lane) = studio.apply(Command::AddTrack) else {
+                    return;
+                };
+                let laid = got.len();
+                for (cue, file) in got {
+                    let Ok(summary) = concat_host::media::probe(&file.to_string_lossy()) else {
+                        continue;
+                    };
+                    let item = summary.to_new_media();
+                    let path = item.path.clone();
+                    let media_id = studio.apply(Command::AddMedia { item }).or_else(|| {
+                        studio
+                            .project()
+                            .media
+                            .iter()
+                            .find(|item| item.path == path)
+                            .map(|item| item.id.clone())
+                    });
+                    let Some(media_id) = media_id else { continue };
+                    let Some(clip_id) = studio.apply(Command::AddClip {
+                        media_id,
+                        track_id: lane.clone(),
+                        start: cue.at,
+                        ripple: false,
+                    }) else {
+                        continue;
+                    };
+                    // Trimmed to the cue rather than run at its own length:
+                    // a cutaway outliving the sentence it illustrates is
+                    // just a cut to somewhere else.
+                    let wanted = (cue.until - cue.at).max(0.4);
+                    if let Some(clip) = studio.clip(&clip_id) {
+                        let over = clip.duration - wanted;
+                        if over > 1e-3 {
+                            studio.apply(Command::TrimClip {
+                                clip_id,
+                                edge: TrimEdge::End,
+                                delta: over,
+                                ripple: false,
+                            });
+                        }
+                    }
+                }
+                studio.broll.open = false;
+                studio.notify(&tf("{0} cutaways laid", &[&laid]), false);
+            },
+        );
+    }
+
     /// Brings one cutaway down and lays it at the playhead.
     ///
     /// On a lane of its own above the picture, because that is what a
