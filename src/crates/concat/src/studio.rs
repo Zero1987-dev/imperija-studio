@@ -5044,35 +5044,21 @@ impl Studio {
                     }
                 };
 
-                // Who has the floor, from the audio. Every part of this is
-                // allowed to fail quietly: no network for the models, no
-                // audio track, one speaker, nothing recognisable as speech.
-                // The camera then follows the largest face, which is what
-                // it did before any of this existed, and a clip still gets
-                // reframed rather than refused.
-                let (path, start, seconds) =
-                    (request.media_path.clone(), request.start, request.duration);
-                let carry_on = std::sync::atomic::AtomicBool::new(false);
-                request.turns = reframers
-                    .speaker_models(&carry_on, &mut report)
-                    .and_then(|(segmentation, voiceprint)| {
-                        concat_speech::diarize::turns(
-                            &path,
-                            start,
-                            seconds,
-                            None,
-                            &segmentation,
-                            &voiceprint,
-                        )
-                    })
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|turn| concat_vision::reframe::Turn {
-                        start: turn.start,
-                        end: turn.end,
-                        speaker: turn.speaker,
-                    })
-                    .collect();
+                // Hearing who has the floor is off, and the camera is back
+                // to following the largest face.
+                //
+                // Two copies of ONNX Runtime are statically linked into this
+                // binary - 1.13.7 inside sherpa-onnx, 1.27.1 for the face
+                // detector - and asking both of them to work in one job ends
+                // in `free(): invalid pointer` from glibc: memory taken by
+                // one runtime and given back by the other. Three actions
+                // were killing the program, and this call is what newly put
+                // the two together.
+                //
+                // It comes back when the two are kept apart, which means
+                // hearing the voices in a process of its own. Not by asking
+                // them to share a heap and hoping.
+                request.turns = Vec::new();
 
                 let result = reframers.reframe(&request, &mut report);
                 (clip_id, result)

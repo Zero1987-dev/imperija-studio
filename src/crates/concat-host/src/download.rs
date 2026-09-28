@@ -296,6 +296,20 @@ pub fn format_for(request: &FetchRequest) -> String {
     choices.join("/")
 }
 
+/// What the tool actually complained about, out of everything it said.
+///
+/// yt-dlp prints a good deal on its way past, and the line that matters is
+/// the one it marks `ERROR:`. The last of those, because the earlier ones
+/// are usually it trying something else first.
+pub fn complaint_in(said: &str) -> Option<String> {
+    said.lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("ERROR:"))
+        .next_back()
+        .map(|line| line.trim_start_matches("ERROR:").trim().to_owned())
+        .filter(|line| !line.is_empty())
+}
+
 /// The fetching service: where the tool lives, and the one-job slot.
 pub struct Downloads {
     gate: Arc<SingleFlight>,
@@ -448,9 +462,11 @@ impl Downloads {
             .arg(url)
             .output()
             .map_err(|error| format!("could not run the downloader: {error}"))?;
+        let mut complaint = None;
         if !out.status.success() {
             let said = String::from_utf8_lossy(&out.stderr);
             log::warn!("captions: {said}");
+            complaint = complaint_in(&said);
         }
 
         // Whatever landed: yt-dlp names the file after the language it
@@ -470,6 +486,16 @@ impl Downloads {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+        // A video with no captions and a video whose captions could not be
+        // fetched are different things, and saying the first when it was
+        // the second sends a person looking for a fault that is not there.
+        // Only when nothing landed: yt-dlp grumbles about plenty it then
+        // goes on to do.
+        if found.is_empty()
+            && let Some(complaint) = complaint
+        {
+            return Err(complaint);
+        }
         Ok(found)
     }
 
@@ -850,6 +876,27 @@ mod tests {
         );
         assert_eq!(percent_of("[download] 100% of 1.00MiB"), Some(1.0));
         assert_eq!(percent_of("[download]   0.0% of ~10.00MiB"), Some(0.0));
+    }
+
+    #[test]
+    fn what_the_tool_complained_about_is_what_comes_back() {
+        // The one that sent somebody looking for captions that were there
+        // all along: YouTube had simply had enough for the hour.
+        let said = "[youtube] kfouoBrOxDY: Downloading webpage\n\
+                    ERROR: Unable to download video subtitles for 'en': \
+                    HTTP Error 429: Too Many Requests\n";
+        assert_eq!(
+            complaint_in(said).as_deref(),
+            Some("Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests")
+        );
+        // The last one, not the first: the earlier is usually it trying
+        // something else before settling on what went wrong.
+        let twice = "ERROR: first thing\nERROR: the one that stuck\n";
+        assert_eq!(complaint_in(twice).as_deref(), Some("the one that stuck"));
+        // And nothing to complain about is nothing.
+        assert_eq!(complaint_in("[youtube] all fine\n"), None);
+        assert_eq!(complaint_in(""), None);
+        assert_eq!(complaint_in("ERROR:   \n"), None);
     }
 
     #[test]
