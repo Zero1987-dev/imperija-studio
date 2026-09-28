@@ -180,6 +180,28 @@ pub fn search(key: &str, words: &str, page: u32) -> Result<Vec<Found>, String> {
     found_in(&body)
 }
 
+/// What to call the file at one address.
+///
+/// The query has to come off first. Pexels hangs one on everything - the
+/// still at `.../free-video-3129671.jpg?fit=crop&w=1200`, the video at
+/// `.../371433846.hd.mp4?s=...&profile_id=175` - and a name taken from the
+/// last slash without cutting there is not a name. Taking it whole, or
+/// refusing it for having a `?` in it and falling back to one fixed name,
+/// ends with every still and every cutaway written over the last.
+pub fn name_for(url: &str) -> String {
+    let bare = url.split(['?', '#']).next().unwrap_or(url);
+    let name = bare
+        .rsplit('/')
+        .find(|part| !part.is_empty())
+        .unwrap_or("pexels");
+    // A name with no full stop in it is not a file the loader can guess at.
+    if name.contains('.') {
+        name.to_owned()
+    } else {
+        format!("{name}.mp4")
+    }
+}
+
 /// Fetches one file, answering with where it landed.
 ///
 /// Written beside its own name under `into`, which for a cutaway is the
@@ -194,11 +216,7 @@ pub fn fetch(
 ) -> Result<std::path::PathBuf, String> {
     use std::io::{Read, Write};
 
-    let name = url
-        .rsplit('/')
-        .next()
-        .filter(|name| !name.is_empty() && !name.contains('?'))
-        .unwrap_or("pexels.mp4");
+    let name = name_for(url);
     std::fs::create_dir_all(into)
         .map_err(|error| format!("could not make {}: {error}", into.display()))?;
     let file = into.join(name);
@@ -331,6 +349,31 @@ mod tests {
         let found = found_in(mixed).expect("reads");
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, 2);
+    }
+
+    #[test]
+    fn the_query_comes_off_before_the_name_is_taken() {
+        // The fault this exists for: every still and every cutaway written
+        // over the last, because a name was refused for having a `?` in it.
+        assert_eq!(
+            name_for(
+                "https://images.pexels.com/videos/3129671/free-video-3129671.jpg?fit=crop&w=1200"
+            ),
+            "free-video-3129671.jpg"
+        );
+        assert_eq!(
+            name_for("https://player.vimeo.com/external/371433846.hd.mp4?s=abc&profile_id=175"),
+            "371433846.hd.mp4"
+        );
+        // Two different videos never answer with the same name.
+        assert_ne!(
+            name_for("https://x/videos/1/free-video-1.jpg?a=b"),
+            name_for("https://x/videos/2/free-video-2.jpg?a=b")
+        );
+        // And a name with nothing to go on still comes back usable.
+        assert!(name_for("https://x/").ends_with(".mp4"));
+        assert!(name_for("").ends_with(".mp4"));
+        assert_eq!(name_for("https://x/plain?q=1"), "plain.mp4");
     }
 
     #[test]
