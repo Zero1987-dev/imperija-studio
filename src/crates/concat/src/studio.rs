@@ -180,6 +180,15 @@ pub(crate) const BLUR_ID: &str = "concat.gaussian-blur";
 pub(crate) const BACKDROP_BLUR: f64 = 28.0;
 pub(crate) const BACKDROP_DIM: f64 = 0.7;
 
+/// The bounce a caption arrives with: under the mark, past it, and settled.
+///
+/// Held in seconds rather than in fractions of the clip, so a word on
+/// screen for four seconds lands as briskly as one on for half of that.
+pub(crate) const POP_FROM: f64 = 0.86;
+pub(crate) const POP_OVER: f64 = 1.06;
+pub(crate) const POP_IN: f64 = 0.09;
+pub(crate) const POP_SETTLE: f64 = 0.17;
+
 /// The frame shapes the launch screen offers, as the ratio behind each
 /// label: width over height.
 ///
@@ -2824,22 +2833,49 @@ impl Studio {
         (duration >= frame).then_some(duration)
     }
 
+    /// Lays one transition on every selected clip that can take it.
+    ///
+    /// One at a time is right for a two-clip edit and wrong for forty. Taking
+    /// the pauses out of five minutes leaves dozens of cuts, and a whip
+    /// between each of them is one gesture or it is not worth having.
+    ///
+    /// A clip with nothing before it on its track has nothing to lead out
+    /// of, so it is passed over rather than refused; the notice says how
+    /// many landed.
     pub fn apply_transition(&mut self, id: &str) {
-        let Some(clip_id) = self.sole_selection() else {
-            self.notify(&t("Select the clip the transition leads into"), true);
-            return;
-        };
-        let Some(clip) = self.clip(&clip_id) else {
-            return;
-        };
-        if !clip.kind.is_visual() {
+        let wanted: Vec<String> = self
+            .selection
+            .iter()
+            .filter(|clip_id| self.clip(clip_id).is_some_and(|clip| clip.kind.is_visual()))
+            .cloned()
+            .collect();
+        if wanted.is_empty() {
             self.notify(
                 &t("Select a video or image clip on the timeline first"),
                 true,
             );
             return;
         }
-        let Some(duration) = self.transition_duration(clip, 0.5) else {
+        let mut commands = Vec::new();
+        for clip_id in &wanted {
+            let Some(clip) = self.clip(clip_id) else {
+                continue;
+            };
+            let Some(duration) = self.transition_duration(clip, 0.5) else {
+                continue;
+            };
+            commands.push(Command::UpdateClip {
+                clip_id: clip_id.clone(),
+                patch: ClipPatch {
+                    transition_in: Some(Some(Transition {
+                        id: id.to_owned(),
+                        duration,
+                    })),
+                    ..ClipPatch::default()
+                },
+            });
+        }
+        if commands.is_empty() {
             self.notify(
                 &t(
                     "There's no room for a transition here - place an adjacent clip \
@@ -2848,17 +2884,12 @@ impl Studio {
                 true,
             );
             return;
-        };
-        self.apply(Command::UpdateClip {
-            clip_id,
-            patch: ClipPatch {
-                transition_in: Some(Some(Transition {
-                    id: id.to_owned(),
-                    duration,
-                })),
-                ..ClipPatch::default()
-            },
-        });
+        }
+        let landed = commands.len();
+        self.apply(Command::Batch { commands });
+        if landed < wanted.len() {
+            self.notify(&tf("{0} of {1} clips", &[&landed, &wanted.len()]), false);
+        }
     }
 
     /// Takes the transition off the selected clip, leaving a plain cut.
@@ -5330,6 +5361,54 @@ impl Studio {
     /// Puts a reframe's keys on clip `id` as one undo step: the three
     /// properties it drives are cleared first, so a second reframe replaces
     /// the first rather than fighting it.
+    /// Makes each selected title arrive with a bounce.
+    ///
+    /// A caption that simply appears reads as a subtitle; one that lands
+    /// reads as an edit. The shape is the one everything struck has: past
+    /// the mark and back to it, quickly, and it is three keys - small,
+    /// over, settled.
+    ///
+    /// In seconds rather than in fractions of the clip, because a word held
+    /// for four seconds should not bounce four times as slowly as one held
+    /// for one.
+    pub fn pop_captions(&mut self) {
+        use model::KeyProperty::Scale;
+
+        let ids = self.text_selection();
+        if ids.is_empty() {
+            self.notify(&t("Select the captions first"), true);
+            return;
+        }
+        self.flush_commit();
+        let mut commands = Vec::new();
+        for clip_id in &ids {
+            let Some(clip) = self.clip(clip_id) else {
+                continue;
+            };
+            let span = clip.duration.max(0.05);
+            let base = clip.scale;
+            commands.push(Command::ClearClipKeys {
+                clip_id: clip_id.clone(),
+                property: Scale,
+            });
+            for (seconds, factor) in [(0.0, POP_FROM), (POP_IN, POP_OVER), (POP_SETTLE, 1.0)] {
+                commands.push(Command::SetClipKey {
+                    clip_id: clip_id.clone(),
+                    property: Scale,
+                    at: (seconds / span).clamp(0.0, 1.0),
+                    value: base * factor,
+                    ease: model::KeyEase::default(),
+                });
+            }
+        }
+        if commands.is_empty() {
+            return;
+        }
+        let count = ids.len();
+        self.apply(Command::Batch { commands });
+        self.notify(&tf("{0} titles", &[&count]), false);
+    }
+
     /// Takes the pauses out.
     ///
     /// Dead air is what makes a clip feel long. The same words with the
@@ -8354,6 +8433,16 @@ impl Studio {
                 "",
                 !locked && clip.kind == model::ClipKind::Video && self.reframe_jobs.is_empty(),
             ),
+            // A caption that simply appears reads as a subtitle; one that
+            // lands reads as an edit. Titles only, and it works on every
+            // one selected, because captions come fifty at a time.
+            action(
+                "pop",
+                t("Make the words pop"),
+                Glyph::Sparkle,
+                "",
+                !locked && clip.kind == model::ClipKind::Text,
+            ),
             // The other half of the pace: the pauses out. Cuts across every
             // unlocked track, so it is offered on the picture and moves the
             // captions with it.
@@ -8965,6 +9054,7 @@ impl Studio {
             "fill-width" => self.fill_width_clip(id),
             "punch" => self.punch_clip(id),
             "jump-cut" => self.jump_cut_clip(id),
+            "pop" => self.pop_captions(),
             "render-sound" => self.render_clip_sound(id),
             "detach" => {
                 self.apply(Command::DetachAudio {
