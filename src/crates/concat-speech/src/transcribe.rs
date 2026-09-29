@@ -168,6 +168,12 @@ pub struct TranscriberStatus {
     pub models: Vec<ModelStatus>,
 }
 
+/// The longest a caption line is allowed to run, in characters.
+///
+/// The same twenty that `concat_host::captions` cuts a site's own captions
+/// to, so a clip reads the same whichever way its words were got.
+pub const LINE: i32 = 20;
+
 /// One caption, in seconds relative to the transcribed window's start.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -396,6 +402,17 @@ impl Transcriber {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
         params.set_suppress_blank(true);
+        // A title per spoken phrase, not one per half-minute of audio.
+        //
+        // whisper.cpp hands back one segment per chunk it decoded, which is
+        // the whole thirty seconds. The sheet promises "one title per
+        // spoken phrase, cut to its own word timing", and the route through
+        // a site's own captions already does that; asking the same here is
+        // three settings. `max_len` only bites when the token times are on,
+        // and `split_on_word` keeps the cut off the middle of a word.
+        params.set_token_timestamps(true);
+        params.set_max_len(LINE);
+        params.set_split_on_word(true);
         // The raw hooks, not `set_abort_callback_safe`. whisper-rs 0.16's
         // safe one hands whisper a pointer to a boxed trait object with a
         // trampoline typed for the closure itself, so whisper reads the
