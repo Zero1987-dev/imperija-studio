@@ -5639,16 +5639,27 @@ impl Studio {
     /// for four seconds should not bounce four times as slowly as one held
     /// for one.
     pub fn pop_captions(&mut self) {
-        use model::KeyProperty::Scale;
-
         let ids = self.text_selection();
         if ids.is_empty() {
             self.notify(&t("Select the captions first"), true);
             return;
         }
         self.flush_commit();
+        let commands = self.pop_commands(&ids);
+        if commands.is_empty() {
+            return;
+        }
+        let count = ids.len();
+        self.apply(Command::Batch { commands });
+        self.notify(&tf("{0} titles", &[&count]), false);
+    }
+
+    /// The keys that give these titles their bounce.
+    fn pop_commands(&self, ids: &[String]) -> Vec<Command> {
+        use model::KeyProperty::Scale;
+
         let mut commands = Vec::new();
-        for clip_id in &ids {
+        for clip_id in ids {
             let Some(clip) = self.clip(clip_id) else {
                 continue;
             };
@@ -5668,12 +5679,43 @@ impl Studio {
                 });
             }
         }
-        if commands.is_empty() {
+        commands
+    }
+
+    /// Every title on the timeline, by id. What a caller takes before
+    /// laying captions, so that afterwards it knows which of them are new.
+    pub fn titles_now(&self) -> std::collections::HashSet<String> {
+        self.timeline()
+            .clips
+            .iter()
+            .filter(|clip| clip.kind == model::ClipKind::Text)
+            .map(|clip| clip.id.clone())
+            .collect()
+    }
+
+    /// Gives the bounce to every title that was not there a moment ago.
+    ///
+    /// Captions arrive as one batch of commands, and a command has no id
+    /// until it has been applied - so the keys cannot ride along with them
+    /// and have to follow. Told what was there before rather than a stretch
+    /// of time, because that is exact where arithmetic over times is a
+    /// guess about rounding.
+    pub fn pop_titles_since(&mut self, known: &std::collections::HashSet<String>) {
+        let fresh: Vec<String> = self
+            .timeline()
+            .clips
+            .iter()
+            .filter(|clip| clip.kind == model::ClipKind::Text)
+            .filter(|clip| !known.contains(&clip.id))
+            .map(|clip| clip.id.clone())
+            .collect();
+        if fresh.is_empty() {
             return;
         }
-        let count = ids.len();
-        self.apply(Command::Batch { commands });
-        self.notify(&tf("{0} titles", &[&count]), false);
+        let commands = self.pop_commands(&fresh);
+        if !commands.is_empty() {
+            self.apply(Command::Batch { commands });
+        }
     }
 
     /// Takes the pauses out.

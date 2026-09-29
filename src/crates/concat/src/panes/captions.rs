@@ -167,7 +167,11 @@ impl CaptionsPane {
                         if count == 0 {
                             studio.notify(&t("Nothing was said in that clip"), true);
                         } else {
+                            let known = studio.titles_now();
                             studio.apply(Command::Batch { commands });
+                            // Captions that simply appear read as
+                            // subtitles; ones that land read as an edit.
+                            studio.pop_titles_since(&known);
                             studio.notify(&tf("Added {0} captions", &[&count]), false);
                         }
                     }
@@ -206,7 +210,9 @@ impl CaptionsPane {
             .collect();
         let count = commands.len();
         self.open = false;
+        let known = studio.titles_now();
         studio.apply(Command::Batch { commands });
+        studio.pop_titles_since(&known);
         studio.notify(&tf("Added {0} captions", &[&count]), false);
     }
 
