@@ -54,20 +54,18 @@ pub fn point_at_the_bundled_runtime() {
         let Some(path) = beside else {
             return;
         };
-        // Two things can go wrong and both are the same to us: the file
-        // is not a runtime, or one has already been settled on. Straight to
-        // stderr, since this crate carries no logger of its own and the
-        // journal keeps stderr for exactly this.
-        let settled = ort::init_from(path.to_string_lossy().as_ref())
-            .map_err(|error| error.to_string())
-            .and_then(|builder| {
-                builder
-                    .commit()
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            });
-        if let Err(error) = settled {
-            eprintln!("onnx runtime at {}: {error}", path.display());
+        // `init_from` takes the path and answers whether the file was a
+        // runtime at all; `commit` answers whether this was the call that
+        // settled it. A `false` there means something had already chosen,
+        // which is not an error and not ours to complain about.
+        //
+        // Straight to stderr on a real failure: this crate carries no
+        // logger of its own, and the journal keeps stderr for this.
+        match ort::init_from(&path) {
+            Ok(builder) => {
+                let _ = builder.commit();
+            }
+            Err(error) => eprintln!("onnx runtime at {}: {error}", path.display()),
         }
     });
 }
