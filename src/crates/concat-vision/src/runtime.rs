@@ -13,6 +13,64 @@
 use ort::session::Session;
 use ort::value::Tensor;
 
+/// Makes sure the runtime that answers is the one shipped beside the
+/// program, and not whatever the linker happened to leave in the binary.
+///
+/// sherpa-onnx carries its own ONNX Runtime and links it statically. Those
+/// symbols satisfy this crate's at link time, so the shared copy the build
+/// fetched is never bound and every session here quietly runs on sherpa's -
+/// an older build, made against an older standard library. On Fedora 44
+/// that one aborts before it has opened a single model:
+///
+/// ```text
+/// free(): invalid pointer
+/// onnxruntime::DeviceDiscovery::DiscoverDevicesForPlatform()
+/// ```
+///
+/// Read out of a core dump, after two guesses at it that were wrong.
+///
+/// Loading by path at run time binds nothing at link time, so there is
+/// nothing for the other copy to capture. Once, before the first session,
+/// and quiet about failing: a path that is not there leaves the loader to
+/// find the library the ordinary way, which is what a developer's build
+/// wants anyway.
+#[cfg(target_os = "linux")]
+pub fn point_at_the_bundled_runtime() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // An environment that already says where it is has been set up
+        // deliberately; do not argue with it.
+        if std::env::var_os("ORT_DYLIB_PATH").is_some() {
+            return;
+        }
+        let beside = std::env::current_exe().ok().and_then(|exe| {
+            let dir = exe.parent()?;
+            // The AppImage lays it in `lib/` beside the binary; a plain
+            // build may leave it alongside.
+            [dir.join("lib").join(LIBRARY), dir.join(LIBRARY)]
+                .into_iter()
+                .find(|path| path.is_file())
+        });
+        let Some(path) = beside else {
+            return;
+        };
+        if let Err(error) = ort::init_from(path.to_string_lossy().as_ref()).commit() {
+            // Straight to stderr: this crate carries no logger of its own,
+            // and the journal keeps stderr for exactly this sort of thing.
+            eprintln!("onnx runtime at {}: {error}", path.display());
+        }
+    });
+}
+
+/// The file name the runtime goes by on this platform.
+#[cfg(target_os = "linux")]
+const LIBRARY: &str = "libonnxruntime.so";
+
+/// Everywhere else the runtime is linked the ordinary way and there is
+/// only one of it.
+#[cfg(not(target_os = "linux"))]
+pub fn point_at_the_bundled_runtime() {}
+
 /// A tensor by name: its dimensions and its values, row-major.
 pub struct Input<'a> {
     /// The graph's input name.
@@ -61,6 +119,7 @@ pub struct Model {
 impl Model {
     /// Loads a model from its bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Model, String> {
+        point_at_the_bundled_runtime();
         let mut builder = Session::builder().map_err(|error| format!("onnx runtime: {error}"))?;
         builder = builder
             .with_execution_providers(accelerators())
@@ -80,7 +139,8 @@ impl Model {
         Ok(Model { session })
     }
 
-    /// Loads a model from a file.
+    /// Loads a model from a file, after making sure the right runtime is
+    /// the one that answers.
     pub fn from_file(path: &std::path::Path) -> Result<Model, String> {
         let bytes = std::fs::read(path)
             .map_err(|error| format!("could not read {}: {error}", path.display()))?;

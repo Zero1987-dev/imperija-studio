@@ -23,6 +23,22 @@ png = "0.17"
 # the CPU provider is always there behind it.
 ort = { workspace = true, optional = true }
 
+# Linux takes the runtime at *run* time rather than at link time, and this
+# is not a preference. sherpa-onnx links its own copy of ONNX Runtime into
+# the binary statically; those symbols then satisfy this crate's at link
+# time, the shared copy the build fetched is never bound, and every session
+# here runs on sherpa's - a different version, built against a different
+# standard library. On Fedora 44 that one aborts inside its own device
+# discovery before it has opened a model:
+#
+#     free(): invalid pointer
+#     onnxruntime::DeviceDiscovery::DiscoverDevicesForPlatform()
+#
+# Loading by path at run time binds nothing at link time and cannot be
+# captured. See `runtime::point_at_the_bundled_runtime`.
+[target.'cfg(target_os = "linux")'.dependencies]
+ort = { workspace = true, optional = true, features = ["load-dynamic"] }
+
 [target.'cfg(target_vendor = "apple")'.dependencies]
 ort = { workspace = true, optional = true, features = ["coreml"] }
 
