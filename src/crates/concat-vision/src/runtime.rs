@@ -54,9 +54,19 @@ pub fn point_at_the_bundled_runtime() {
         let Some(path) = beside else {
             return;
         };
-        if let Err(error) = ort::init_from(path.to_string_lossy().as_ref()).commit() {
-            // Straight to stderr: this crate carries no logger of its own,
-            // and the journal keeps stderr for exactly this sort of thing.
+        // Two things can go wrong and both are the same to us: the file
+        // is not a runtime, or one has already been settled on. Straight to
+        // stderr, since this crate carries no logger of its own and the
+        // journal keeps stderr for exactly this.
+        let settled = ort::init_from(path.to_string_lossy().as_ref())
+            .map_err(|error| error.to_string())
+            .and_then(|builder| {
+                builder
+                    .commit()
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            });
+        if let Err(error) = settled {
             eprintln!("onnx runtime at {}: {error}", path.display());
         }
     });
