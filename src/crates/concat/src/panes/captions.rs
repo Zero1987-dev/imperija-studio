@@ -50,7 +50,7 @@ const CAPTION_LINES: f64 = 2.0;
 /// Held here as well as set on the style because the placing is worked out
 /// from it: if the two ever disagree the caption is measured for a block
 /// it is not.
-const CAPTION_LINE_HEIGHT: f64 = 1.2;
+pub(crate) const CAPTION_LINE_HEIGHT: f64 = 1.2;
 
 /// A caption's cap height by the sheet's row, as a fraction of the frame.
 const CAPTION_SIZES: [f64; 3] = [0.04, 0.05, 0.065];
@@ -63,7 +63,7 @@ const CAPTION_SIZES: [f64; 3] = [0.04, 0.05, 0.065];
 /// is drawn for reading a paragraph on a desk. Anton holds at a glance,
 /// and being condensed it fits more of a sentence on a line before the
 /// line has to break.
-const CAPTION_FAMILY: &str = "Anton";
+pub(crate) const CAPTION_FAMILY: &str = "Anton";
 
 /// The hard edge drawn round it, as a fraction of the frame.
 ///
@@ -73,7 +73,7 @@ const CAPTION_FAMILY: &str = "Anton";
 /// be any colour. Eight thousandths is about two pixels at 1080 wide:
 /// enough to separate the letters from what is behind them, not enough
 /// to thicken them.
-const CAPTION_STROKE: f64 = 0.008;
+pub(crate) const CAPTION_STROKE: f64 = 0.008;
 
 /// The widest a caption line runs, as a fraction of the frame's width.
 ///
@@ -84,7 +84,7 @@ const CAPTION_STROKE: f64 = 0.008;
 /// is about a frame and a quarter; at the largest, half that many is
 /// already too many. A width means the same thing at every size, and the
 /// painter wraps to it.
-const CAPTION_WIDTH: f64 = 0.86;
+pub(crate) const CAPTION_WIDTH: f64 = 0.86;
 
 /// Where a caption of `size` sits for the sheet's `placement` row: a
 /// frame-height fraction from the centre, positive down.

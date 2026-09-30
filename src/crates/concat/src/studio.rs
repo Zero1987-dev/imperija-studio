@@ -189,6 +189,38 @@ pub(crate) const POP_OVER: f64 = 1.06;
 pub(crate) const POP_IN: f64 = 0.09;
 pub(crate) const POP_SETTLE: f64 = 0.17;
 
+/// How long a cutaway takes to appear, and to go, in seconds.
+///
+/// A cutaway that cuts straight in reads as a mistake in the edit rather
+/// than a look at something: the picture jumps, and for a fifth of a
+/// second nobody knows what they are looking at. Dissolving costs that
+/// fifth of a second at each end and buys the whole difference between
+/// "there is a shot of a bridge here" and "the video glitched".
+///
+/// Short, though. This is a feed, not a documentary.
+pub(crate) const CUTAWAY_FADE: f64 = 0.22;
+
+/// How long the opening hook holds, in seconds.
+///
+/// The first three seconds decide whether there is a fourth. Long enough
+/// to be read twice at a glance, short enough to be gone before it is in
+/// the way of the thing it promised.
+pub(crate) const HOOK_SECONDS: f64 = 2.6;
+
+/// Its cap height, as a fraction of the frame.
+///
+/// Half again the largest caption. A hook is not a caption: it is not read
+/// along with the speaking, it is read *instead* of it, in the moment
+/// before anybody has decided to stay.
+pub(crate) const HOOK_SIZE: f64 = 0.075;
+
+/// Where it sits, as a frame-height fraction from the centre.
+///
+/// Above the middle, and by enough that two lines of it still clear both
+/// the strip a feed draws across the top and a watermark under that. A
+/// hook in the middle of the frame is a hook across somebody's face.
+pub(crate) const HOOK_PLACE: f64 = -0.16;
+
 /// How wide a watermark sits, as a fraction of the frame's width.
 ///
 /// An eighth. Large enough to be read on a phone held at arm's length and
@@ -5318,7 +5350,7 @@ impl Studio {
         self.broll.message.clear();
         let epoch = crate::host::project_epoch();
         spawn_in_project(
-            move || -> Vec<(concat_host::broll::Cue, std::path::PathBuf)> {
+            move || -> Vec<(concat_host::broll::Cue, std::path::PathBuf, f64)> {
                 let total = cues.len() as f32;
                 let mut got = Vec::new();
                 for (done, cue) in cues.into_iter().enumerate() {
@@ -5329,7 +5361,14 @@ impl Studio {
                         && let Ok(file) =
                             concat_host::pexels::fetch(&first.file, &into, &mut |_, _| {})
                     {
-                        got.push((cue, file));
+                        // Where the footage actually starts showing
+                        // something, which is rarely its first frame. Done
+                        // here rather than on the window's thread because
+                        // it decodes, and it is a few frames at a
+                        // hundred-odd pixels wide.
+                        let wanted = (cue.until - cue.at).max(0.4);
+                        let skip = concat_host::broll::opening(&file.to_string_lossy(), wanted);
+                        got.push((cue, file, skip));
                     }
                     let fraction = (done + 1) as f32 / total;
                     on_ui_in_project(epoch, move |studio, _, _| {
@@ -5351,7 +5390,7 @@ impl Studio {
                     return;
                 };
                 let laid = got.len();
-                for (cue, file) in got {
+                for (cue, file, skip) in got {
                     let Ok(summary) = concat_host::media::probe(&file.to_string_lossy()) else {
                         continue;
                     };
@@ -5374,6 +5413,21 @@ impl Studio {
                     }) else {
                         continue;
                     };
+                    let wanted = (cue.until - cue.at).max(0.4);
+
+                    // Past the stock clip's own front matter. A head trim
+                    // takes the in-point with it, which is the only way to
+                    // start a clip inside its file; it also drags the clip
+                    // down the timeline, which is put right below.
+                    if skip > 1e-3 {
+                        studio.apply(Command::TrimClip {
+                            clip_id: clip_id.clone(),
+                            edge: TrimEdge::Start,
+                            delta: skip,
+                            ripple: false,
+                        });
+                    }
+
                     // Trimmed to the cue rather than run at its own length:
                     // a cutaway outliving the sentence it illustrates is
                     // just a cut to somewhere else.
@@ -5382,17 +5436,37 @@ impl Studio {
                     // see `TrimClip`. Sent positive the first time, which
                     // stretched every cutaway to the end of its file
                     // instead of cropping it.
-                    let wanted = (cue.until - cue.at).max(0.4);
                     if let Some(clip) = studio.clip(&clip_id) {
                         let over = clip.duration - wanted;
                         if over > 1e-3 {
                             studio.apply(Command::TrimClip {
-                                clip_id,
+                                clip_id: clip_id.clone(),
                                 edge: TrimEdge::End,
                                 delta: -over,
                                 ripple: false,
                             });
                         }
+                    }
+
+                    // Back under the words it illustrates, which the head
+                    // trim moved it off.
+                    if let Some(clip) = studio.clip(&clip_id) {
+                        let adrift = (clip.start - cue.at).abs() > 1e-6;
+                        let track_id = clip.track_id.clone();
+                        if adrift {
+                            studio.apply(Command::MoveClips {
+                                moves: vec![ClipMove {
+                                    clip_id: clip_id.clone(),
+                                    start: cue.at,
+                                    track_id,
+                                }],
+                            });
+                        }
+                    }
+
+                    let dissolve = studio.cutaway_fade(&clip_id);
+                    if !dissolve.is_empty() {
+                        studio.apply(Command::Batch { commands: dissolve });
                     }
                 }
                 studio.broll.open = false;
@@ -5581,6 +5655,90 @@ impl Studio {
         // move it.
         self.selection = vec![clip_id];
         self.notify(&tf("{0} is on every frame now", &[&name]), false);
+    }
+
+    /// Opacity keys that dissolve a cutaway in and back out.
+    ///
+    /// Keys rather than a fade, because a fade in this program is a fade of
+    /// the *sound*, and the one video fade there is belongs to transitions,
+    /// which are about a cut between two clips on one lane. A cutaway is
+    /// not a cut: it is a second picture laid over the first, and what it
+    /// has to do is arrive and leave without either of them jumping.
+    ///
+    /// The whole thing is an ordinary keyframe afterwards, visible in the
+    /// Keyframes tab and draggable like any other.
+    fn cutaway_fade(&self, clip_id: &str) -> Vec<Command> {
+        use model::KeyProperty::Opacity;
+
+        let Some(clip) = self.clip(clip_id) else {
+            return Vec::new();
+        };
+        let span = clip.duration.max(0.05);
+        let base = clip.opacity;
+        // A third each way at most, so a very short cutaway is still all
+        // the way up in the middle of itself rather than a shape that
+        // never arrives.
+        let fade = CUTAWAY_FADE.min(span / 3.0);
+        let mut commands = vec![Command::ClearClipKeys {
+            clip_id: clip_id.to_owned(),
+            property: Opacity,
+        }];
+        for (seconds, value) in [(0.0, 0.0), (fade, base), (span - fade, base), (span, 0.0)] {
+            commands.push(Command::SetClipKey {
+                clip_id: clip_id.to_owned(),
+                property: Opacity,
+                at: (seconds / span).clamp(0.0, 1.0),
+                value,
+                ease: model::KeyEase::default(),
+            });
+        }
+        commands
+    }
+
+    /// Lays the opening hook: one large line over the first seconds.
+    ///
+    /// The words are a placeholder, because what the hook should say is the
+    /// one decision in this program that nothing here can make. Everything
+    /// around the words is decided: the face, the size, the place clear of
+    /// the feed's own furniture, and the bounce it lands with. The clip is
+    /// left selected, so the next thing to do is type.
+    pub fn add_hook(&mut self) {
+        if self.session.is_none() {
+            return;
+        }
+        let style = model::TextStyle {
+            content: t("THE HOOK GOES HERE"),
+            font_family: crate::panes::captions::CAPTION_FAMILY.to_owned(),
+            font_size: HOOK_SIZE,
+            // Anton is drawn at one weight; asking for a heavier one only
+            // invites the painter to thicken it itself.
+            font_weight: 400.0,
+            color: "#ffffff".to_owned(),
+            stroke_width: crate::panes::captions::CAPTION_STROKE,
+            stroke_color: "#000000".to_owned(),
+            shadow: false,
+            max_width: crate::panes::captions::CAPTION_WIDTH,
+            line_height: crate::panes::captions::CAPTION_LINE_HEIGHT,
+            ..model::TextStyle::default()
+        };
+        // At the top of the edit, not at the playhead: a hook that starts
+        // anywhere else is not a hook.
+        let Some(clip_id) = self.apply(Command::AddTextClip {
+            track_id: None,
+            above: true,
+            start: 0.0,
+            style: Some(style),
+            duration: Some(HOOK_SECONDS),
+            offset_y: Some(HOOK_PLACE),
+        }) else {
+            return;
+        };
+        let landing = self.pop_commands(&[clip_id.clone()]);
+        if !landing.is_empty() {
+            self.apply(Command::Batch { commands: landing });
+        }
+        self.selection = vec![clip_id];
+        self.notify(&t("Hook laid - type over it"), false);
     }
 
     /// Opens the Video Downloader sheet.

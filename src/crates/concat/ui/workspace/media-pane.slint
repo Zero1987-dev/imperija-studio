@@ -1423,6 +1423,7 @@ export component MediaPane inherits Rectangle {
     callback open-downloader();
     callback open-broll();
     callback add-watermark();
+    callback add-hook();
     callback filter-changed(filter: MediaFilter);
     /// The sort dropdown beside the import button picked a new order.
     callback sort-changed(index: int);
@@ -1789,6 +1790,12 @@ export component MediaPane inherits Rectangle {
                             label: I18n.t("Logo");
                             current: false;
                             clicked => { root.add-watermark(); }
+                        }
+                        LibraryTab {
+                            glyph: Glyph.text-mark;
+                            label: I18n.t("Hook");
+                            current: false;
+                            clicked => { root.add-hook(); }
                         }
                     }
                 }

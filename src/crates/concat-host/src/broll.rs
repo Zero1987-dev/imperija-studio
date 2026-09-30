@@ -19,6 +19,11 @@
 //! listable, in either language this is cut in, and what is left over is
 //! mostly what the sentence is about.
 
+//! One thing here does open a file: [`opening`], which looks at the stock
+//! footage to find a moment worth cutting to. Everything else is text.
+
+use concat_media::{DecodeOptions, Decoder, FrameSource};
+
 /// The words that carry grammar rather than meaning, in the two languages
 /// this is cut in.
 ///
@@ -363,4 +368,149 @@ mod tests {
         // A spacing of nothing is still a spacing, not a division by zero.
         assert_eq!(cues(&[line(0.0, "motorcycle")], 0.0, LENGTH).len(), 1);
     }
+}
+
+/// How far into a stock clip the search for an opening begins, as a
+/// fraction of the file.
+///
+/// Stock footage is sold with its own front matter. A slow fade up from
+/// black is the commonest, a held title card the next, and either way the
+/// first moment of the file is the one moment of it worth the least. A
+/// cutaway taken from the very head therefore shows the fade rather than
+/// the shot - and where the fade is longer than the cutaway, shows nothing
+/// at all.
+pub const INTO: f64 = 0.12;
+
+/// How lit a frame has to be to count as a picture, zero to one.
+pub const LIT: f64 = 0.07;
+
+/// And how much it has to vary across itself, on the same scale.
+///
+/// Brightness alone passes a white title card, which is as useless a
+/// cutaway as a black one. A picture of something has light and dark in
+/// it; a card does not.
+pub const VARIED: f64 = 0.035;
+
+/// How far apart the frames tried are, in seconds.
+pub const STEP: f64 = 0.4;
+
+/// How many are tried before giving up.
+///
+/// Twelve steps is a little under five seconds of searching, which covers
+/// any front matter worth the name. Past that the file is probably dark on
+/// purpose, and starting at the head is as good an answer as any.
+pub const TRIES: usize = 12;
+
+/// How wide the frames are decoded, in pixels.
+///
+/// This is a question about the average of a picture, and the average of a
+/// picture survives being made small. Sixteenth of a frame each way is a
+/// four-hundredth of the pixels and the same answer.
+pub const LOOK_WIDTH: u32 = 120;
+
+/// Where in `path` a cutaway of `wanted` seconds should start.
+///
+/// Answers with seconds into the file: the first moment from [`INTO`]
+/// onwards that has a picture in it, or zero if the file is too short to
+/// choose or nothing in it passes. Never answers with a start so late that
+/// `wanted` would run off the end.
+///
+/// The whole point is that a stock clip's own opening is usually its worst
+/// part, and nothing else in the program was looking. One cutaway came out
+/// black from end to end because the file it came from faded up over three
+/// seconds and the cutaway was two and a half.
+pub fn opening(path: &str, wanted: f64) -> f64 {
+    let Ok(info) = concat_media::probe(path) else {
+        return 0.0;
+    };
+    let Some(seconds) = info.duration.map(|d| d.as_f64()) else {
+        return 0.0;
+    };
+    // The last moment a cutaway may begin at and still be whole.
+    let latest = seconds - wanted;
+    if latest <= STEP {
+        return 0.0;
+    }
+    let from = (seconds * INTO).min(latest);
+
+    let Ok(video) = info.require_video() else {
+        return from;
+    };
+    let aspect = if video.height > 0 {
+        f64::from(video.width) / f64::from(video.height)
+    } else {
+        1.0
+    };
+    let options = DecodeOptions::default()
+        .starting_at(concat_core::Rational::new((from * 1000.0) as i64, 1000))
+        .scaled_to(
+            LOOK_WIDTH,
+            ((f64::from(LOOK_WIDTH) / aspect.max(0.01)).round() as u32).max(1),
+        )
+        // Exactly one frame every STEP, as a fraction rather than a whole
+        // number of frames a second: a step of 0.4 is two and a half a
+        // second, and rounding that to three would put every answer below
+        // out by as much as three quarters of a second by the last try.
+        .at_rate(concat_core::FrameRate::new(concat_core::Rational::new(
+            1000,
+            (STEP * 1000.0).round() as i64,
+        )))
+        .limited_to(TRIES as u64);
+    let Ok(mut decoder) = Decoder::open(path, &options) else {
+        return from;
+    };
+    for step in 0..TRIES {
+        let at = from + step as f64 * STEP;
+        if at > latest {
+            break;
+        }
+        match decoder.next_frame() {
+            Ok(Some(frame)) => {
+                let (lit, varied) = picture(&frame);
+                if lit >= LIT && varied >= VARIED {
+                    return at;
+                }
+            }
+            // The file ended or would not decode: what was asked for at the
+            // start is as good as anything now.
+            _ => break,
+        }
+    }
+    from
+}
+
+/// A frame's average brightness and how much it varies across itself, both
+/// zero to one.
+///
+/// Its own loop rather than the one in [`super::review`], because that one
+/// answers a different question - how far this frame is from the one before
+/// it - and folding both into one function would mean every caller paying
+/// for the half it did not ask for.
+fn picture(frame: &concat_core::Frame) -> (f64, f64) {
+    use concat_core::frame::BYTES_PER_PIXEL;
+
+    let pixels = frame.pixels();
+    if pixels.len() < BYTES_PER_PIXEL {
+        return (0.0, 0.0);
+    }
+    let mut levels = Vec::with_capacity(pixels.len() / BYTES_PER_PIXEL);
+    let mut at = 0;
+    while at + 2 < pixels.len() {
+        // Weighted the way an eye weighs it: a frame of pure blue is dark
+        // to look at, and a mean of the three channels calls it a third
+        // lit.
+        levels.push(
+            (0.2126 * f64::from(pixels[at])
+                + 0.7152 * f64::from(pixels[at + 1])
+                + 0.0722 * f64::from(pixels[at + 2]))
+                / 255.0,
+        );
+        at += BYTES_PER_PIXEL;
+    }
+    if levels.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mean = levels.iter().sum::<f64>() / levels.len() as f64;
+    let spread = levels.iter().map(|level| (level - mean).abs()).sum::<f64>() / levels.len() as f64;
+    (mean, spread)
 }
