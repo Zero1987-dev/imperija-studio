@@ -24,18 +24,34 @@ use crate::panes::settings::installed;
 use crate::studio::Studio;
 use crate::ui::CaptionsSheetData;
 
-/// Where a caption sits, by the sheet's row: a frame-height fraction from
-/// the centre, positive down. Bottom, centre, top.
+/// The lowest a caption's block may reach, and the highest, as fractions
+/// down the frame.
 ///
-/// Neither end is the end of the frame. The app a tall clip is watched in
+/// Neither is the edge of the picture. The app a tall clip is watched in
 /// draws its own furniture over both: the tabs and the search glass across
 /// the top, and along the bottom the poster's name, their caption and the
 /// music ticker, which together take about the last fifth. A caption put
-/// into either is a caption nobody reads, and there is no warning because
-/// the editor's own picture has none of that over it. So "bottom" stops
-/// short of the bottom and "top" of the top, and both still read as low
-/// and high in frame because everything else is in the middle.
-const CAPTION_OFFSETS: [f64; 3] = [0.28, 0.0, -0.28];
+/// into either is a caption nobody reads, and there is no warning while
+/// editing because the editor's own picture has none of that over it.
+const CAPTION_FLOOR: f64 = 0.79;
+const CAPTION_CEILING: f64 = 0.21;
+
+/// How many lines the placing leaves room for.
+///
+/// The sheet places the *middle* of a caption, and a caption is as many
+/// lines as its words need. Two is what the wrapping produces at every
+/// size offered, so two is what the placing allows for; a third line
+/// hangs below where it was measured for, which at the bottom means into
+/// the furniture.
+const CAPTION_LINES: f64 = 2.0;
+
+/// The gap between those lines, as a multiple of the size.
+///
+/// Held here as well as set on the style because the placing is worked out
+/// from it: if the two ever disagree the caption is measured for a block
+/// it is not.
+const CAPTION_LINE_HEIGHT: f64 = 1.2;
+
 /// A caption's cap height by the sheet's row, as a fraction of the frame.
 const CAPTION_SIZES: [f64; 3] = [0.04, 0.05, 0.065];
 
@@ -58,6 +74,34 @@ const CAPTION_FAMILY: &str = "Anton";
 /// enough to separate the letters from what is behind them, not enough
 /// to thicken them.
 const CAPTION_STROKE: f64 = 0.008;
+
+/// The widest a caption line runs, as a fraction of the frame's width.
+///
+/// Without a limit a line is as long as its words, and a long one walks
+/// off both sides of the frame - which is easy to miss, because the line
+/// is wrapped by letter count before it is drawn and a letter count is
+/// not a width. Forty characters of a condensed face at the smallest size
+/// is about a frame and a quarter; at the largest, half that many is
+/// already too many. A width means the same thing at every size, and the
+/// painter wraps to it.
+const CAPTION_WIDTH: f64 = 0.86;
+
+/// Where a caption of `size` sits for the sheet's `placement` row: a
+/// frame-height fraction from the centre, positive down.
+///
+/// Worked out rather than looked up, because the room a caption needs
+/// depends on how big it is. A single pair of numbers for all three sizes
+/// either wastes the frame at the smallest or hangs the largest into the
+/// furniture, and drawn out at 1080 by 1920 the largest did exactly that.
+fn caption_offset(placement: usize, size: f64) -> f64 {
+    let half = CAPTION_LINES * size * CAPTION_LINE_HEIGHT / 2.0;
+    match placement {
+        0 => CAPTION_FLOOR - half - 0.5,
+        2 => CAPTION_CEILING + half - 0.5,
+        _ => 0.0,
+    }
+}
+
 /// A rough speaking rate, for a script's timing and the speech sheet's
 /// estimate.
 pub const CHARS_PER_SECOND: f32 = 14.0;
@@ -214,10 +258,8 @@ impl CaptionsPane {
 
     /// A caption's look, by the sheet's rows: where it sits and its size.
     fn look(&self) -> (f64, f64) {
-        (
-            CAPTION_OFFSETS[self.placement.min(2)],
-            CAPTION_SIZES[self.size.min(2)],
-        )
+        let size = CAPTION_SIZES[self.size.min(2)];
+        (caption_offset(self.placement.min(2), size), size)
     }
 
     /// The script as titles, one after another from the playhead.
@@ -399,6 +441,8 @@ fn caption_clip(text: String, start: f64, duration: f64, look: (f64, f64)) -> Co
             stroke_width: CAPTION_STROKE,
             stroke_color: "#000000".to_owned(),
             shadow: false,
+            max_width: CAPTION_WIDTH,
+            line_height: CAPTION_LINE_HEIGHT,
             ..TextStyle::default()
         }),
         duration: Some(duration),
@@ -497,7 +541,41 @@ fn wrap_caption(sentence: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::script_captions;
+    use super::{
+        CAPTION_CEILING, CAPTION_FLOOR, CAPTION_LINE_HEIGHT, CAPTION_LINES, CAPTION_SIZES,
+        caption_offset, script_captions,
+    };
+
+    /// At every size the sheet offers, a two-line caption stays out of the
+    /// strips a feed draws over a tall clip.
+    #[test]
+    fn a_caption_clears_the_furniture_at_every_size() {
+        for size in CAPTION_SIZES {
+            let half = CAPTION_LINES * size * CAPTION_LINE_HEIGHT / 2.0;
+
+            let low = 0.5 + caption_offset(0, size);
+            assert!(
+                (low + half - CAPTION_FLOOR).abs() < 1e-9,
+                "the bottom row at {size} reaches {}",
+                low + half
+            );
+
+            let high = 0.5 + caption_offset(2, size);
+            assert!(
+                (high - half - CAPTION_CEILING).abs() < 1e-9,
+                "the top row at {size} reaches {}",
+                high - half
+            );
+
+            // And the two never meet in the middle, which they would if a
+            // size were ever chosen large enough to fill the clear part.
+            assert!(low - half > high + half, "the rows overlap at {size}");
+        }
+        assert!(
+            (caption_offset(1, 0.05)).abs() < 1e-9,
+            "the middle row is not the middle"
+        );
+    }
 
     /// A script becomes one caption per sentence, a hand line break is
     /// kept, a long sentence wraps at its words, and each line is held for
