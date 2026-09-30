@@ -1424,6 +1424,7 @@ export component MediaPane inherits Rectangle {
     callback open-broll();
     callback add-watermark();
     callback add-hook();
+    callback open-podscout();
     callback filter-changed(filter: MediaFilter);
     /// The sort dropdown beside the import button picked a new order.
     callback sort-changed(index: int);
@@ -1796,6 +1797,12 @@ export component MediaPane inherits Rectangle {
                             label: I18n.t("Hook");
                             current: false;
                             clicked => { root.add-hook(); }
+                        }
+                        LibraryTab {
+                            glyph: Glyph.razor;
+                            label: I18n.t("Podscout");
+                            current: false;
+                            clicked => { root.open-podscout(); }
                         }
                     }
                 }

@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 TikTok Imperija
+
+// Podscout: what the clip finder already decided.
+//
+// A list and nothing else. Everything on a row was worked out before the
+// editor opened — which stretch, how good it is, and what to put on the
+// screen — and the one thing this sheet does is stop it being retyped.
+
+import { I18n } from "../i18n.slint";
+import { Theme } from "../theme/theme.slint";
+import { Glyph, Icon } from "../icons.slint";
+import { DialogSection, Modal } from "../primitives/modal.slint";
+
+export struct PodscoutPickData {
+    /// "9" of ten, as the finder scored it
+    score: string,
+    /// the heading
+    title: string,
+    /// "29 s · 5:49" — how long it runs and where it is
+    where-when: string,
+    /// what goes on the screen over the opening
+    on-screen: string,
+    /// whether the finder's line is somewhere other than the opening, so
+    /// this one gets a cold open
+    cold: bool,
+}
+
+export struct PodscoutSheetData {
+    open: bool,
+    /// the source's title, from the notes
+    title: string,
+    /// why nothing happened, when nothing did
+    message: string,
+    picks: [PodscoutPickData],
+}
+
+/// One row: the score, what it is, and whether it opens cold.
+component PickRow inherits Rectangle {
+    in property <PodscoutPickData> pick;
+    callback make();
+
+    height: 64px;
+    background: touch.has-hover ? Theme.raised : transparent;
+    border-radius: Theme.r-sm;
+
+    touch := TouchArea {
+        clicked => { root.make(); }
+    }
+
+    HorizontalLayout {
+        padding: 8px;
+        spacing: 10px;
+
+        // The score, given the weight it has earned: it is the one number
+        // worth reading before the words.
+        Rectangle {
+            width: 30px;
+            background: Theme.well;
+            border-radius: Theme.r-xs;
+
+            Text {
+                text: root.pick.score;
+                color: Theme.fg;
+                font-size: Theme.fs-lg;
+                font-weight: Theme.weight-display;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.pick.title;
+                color: Theme.fg;
+                font-size: Theme.fs-sm;
+                font-weight: Theme.weight-title;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+
+                Text {
+                    text: root.pick.where-when;
+                    color: Theme.fg-muted;
+                    font-family: Theme.font-technical;
+                    font-size: Theme.fs-xs;
+                    vertical-alignment: center;
+                }
+
+                if root.pick.cold: Text {
+                    text: I18n.t("cold open");
+                    color: Theme.accent;
+                    font-size: Theme.fs-xs;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                glyph: Glyph.razor;
+                size: 16px;
+                tint: touch.has-hover ? Theme.accent : Theme.fg-muted;
+            }
+        }
+    }
+}
+
+export component PodscoutDialog inherits Modal {
+    in property <PodscoutSheetData> data;
+
+    callback make(index: int);
+
+    open: root.data.open;
+    title: I18n.t("Podscout");
+    glyph: Glyph.text-mark;
+    surface-width: 460px;
+
+    VerticalLayout {
+        DialogSection {
+            first: true;
+            title: root.data.title;
+
+            Text {
+                text: I18n.t("Select the podcast on the timeline, then click a clip. What the finder chose — the stretch, the line to open on, the words on screen — is laid for you.");
+                color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+
+            if root.data.message != "": Text {
+                text: root.data.message;
+                color: Theme.danger;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+        }
+
+        if root.data.picks.length > 0: DialogSection {
+            title: I18n.t("What it found");
+
+            Flickable {
+                height: min(root.data.picks.length * 64px, 320px);
+                viewport-height: root.data.picks.length * 64px;
+
+                VerticalLayout {
+                    alignment: start;
+
+                    for pick[index] in root.data.picks: PickRow {
+                        pick: pick;
+                        make => { root.make(index); }
+                    }
+                }
+            }
+        }
+    }
+}

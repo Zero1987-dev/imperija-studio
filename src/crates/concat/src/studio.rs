@@ -849,6 +849,8 @@ pub struct Studio {
     /// is remembered only so that anything laid on a new lane afterwards
     /// can put it back on top - which is the whole of what a watermark
     /// means.
+    /// The Podscout sheet.
+    pub podscout: PodscoutSheet,
     pub watermark: Option<String>,
     pub drop: Option<DropPlan>,
     pub project_sheet: crate::panes::project::ProjectPane,
@@ -1565,6 +1567,7 @@ impl Studio {
             packages_pending: None,
             last_commit: None,
             title_blocks: HashMap::new(),
+            podscout: PodscoutSheet::default(),
             watermark: None,
             drop: None,
             project_sheet: crate::panes::project::ProjectPane::default(),
@@ -5670,6 +5673,193 @@ impl Studio {
         self.notify(&tf("{0} is on every frame now", &[&name]), false);
     }
 
+    /// Opens the Podscout sheet: picks a finder's notes and reads them.
+    pub fn open_podscout(&mut self) {
+        let Some(chosen) = crate::platform::pick_files(
+            &t("Choose the clip finder's notes"),
+            Some((t("Notes").as_str(), &["md", "markdown", "txt"])),
+        )
+        .and_then(|paths| paths.into_iter().next()) else {
+            return;
+        };
+        let read = match std::fs::read_to_string(&chosen) {
+            Ok(text) => concat_host::podscout::read(&text),
+            Err(error) => {
+                self.notify(&tf("Could not read the notes: {0}", &[&error]), true);
+                return;
+            }
+        };
+        if read.picks.is_empty() {
+            self.notify(&t("No clips in that file"), true);
+            return;
+        }
+        self.podscout.message.clear();
+        self.podscout.sheet = Some(read);
+        self.podscout.open = true;
+    }
+
+    /// Closes it.
+    pub fn close_podscout(&mut self) {
+        self.podscout.open = false;
+    }
+
+    /// Lays `media` from `from` to `to` in the source, at `at` on `lane`.
+    ///
+    /// A clip comes in whole and at the head of its file, and the only way
+    /// to start one further in is to drag its head - which shortens it and
+    /// walks it down the timeline, so both are then put back. The same
+    /// three steps the cutaways take.
+    fn lay_span(
+        &mut self,
+        media_id: &str,
+        lane: &str,
+        at: f64,
+        from: f64,
+        to: f64,
+    ) -> Option<String> {
+        let wanted = (to - from).max(0.1);
+        let clip_id = self.apply(Command::AddClip {
+            media_id: media_id.to_owned(),
+            track_id: lane.to_owned(),
+            start: at,
+            ripple: false,
+        })?;
+        if from > 1e-3 {
+            self.apply(Command::TrimClip {
+                clip_id: clip_id.clone(),
+                edge: TrimEdge::Start,
+                delta: from,
+                ripple: false,
+            });
+        }
+        if let Some(clip) = self.clip(&clip_id) {
+            let over = clip.duration - wanted;
+            if over.abs() > 1e-3 {
+                self.apply(Command::TrimClip {
+                    clip_id: clip_id.clone(),
+                    edge: TrimEdge::End,
+                    delta: -over,
+                    ripple: false,
+                });
+            }
+        }
+        if let Some(clip) = self.clip(&clip_id) {
+            let adrift = (clip.start - at).abs() > 1e-6;
+            let track_id = clip.track_id.clone();
+            if adrift {
+                self.apply(Command::MoveClips {
+                    moves: vec![ClipMove {
+                        clip_id: clip_id.clone(),
+                        start: at,
+                        track_id,
+                    }],
+                });
+            }
+        }
+        Some(clip_id)
+    }
+
+    /// Builds the pick at `index` out of the selected clip's media.
+    ///
+    /// The finder decided four things about every clip: which stretch to
+    /// post, which line inside it is the one worth hearing, what to put on
+    /// the screen, and what to write underneath. Three of those were being
+    /// retyped by hand and the fourth was being lost, which is how a clip
+    /// went out with `THE HOOK GOES HERE` on it while the line the finder
+    /// had chosen played at the twenty-third second.
+    ///
+    /// So: the selected clip is replaced by the stretch the finder picked,
+    /// the line it picked is laid *in front* as a cold open where that line
+    /// is not simply the stretch's own opening, and its words go on the
+    /// screen over it. The caption is put where it can be copied.
+    pub fn podscout_make(&mut self, index: i32) {
+        let Some(sheet) = self.podscout.sheet.as_ref() else {
+            return;
+        };
+        let Some(pick) = usize::try_from(index)
+            .ok()
+            .and_then(|index| sheet.picks.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(clip) = self.selected_video() else {
+            self.podscout.message = t("Select the podcast on the timeline first");
+            return;
+        };
+        let (media_id, lane, was) = (clip.media_id, clip.track_id, clip.id);
+
+        // The whole edit is one step: the source clip gone and the pieces
+        // in its place, so one undo puts the podcast back.
+        self.apply(Command::RemoveClips {
+            clip_ids: vec![was],
+            ripple: false,
+        });
+
+        // A hook that *is* the stretch's own opening would only say the
+        // same thing twice; one from anywhere else is a cold open.
+        let cold = pick
+            .hook
+            .filter(|hook| (hook.from - pick.body.from).abs() > 1.0);
+        let mut at = 0.0;
+        if let Some(hook) = cold {
+            self.lay_span(&media_id, &lane, at, hook.from, hook.to);
+            at += hook.length();
+        }
+        self.lay_span(&media_id, &lane, at, pick.body.from, pick.body.to);
+
+        // The finder's own line, over the opening, in the brand's face.
+        let over = if at > 0.1 { at } else { HOOK_SECONDS };
+        let style = model::TextStyle {
+            content: pick.on_screen.to_uppercase(),
+            font_family: crate::panes::captions::CAPTION_FAMILY.to_owned(),
+            font_size: HOOK_SIZE,
+            font_weight: 400.0,
+            color: "#ffffff".to_owned(),
+            stroke_width: crate::panes::captions::CAPTION_STROKE,
+            stroke_color: "#000000".to_owned(),
+            shadow: false,
+            max_width: crate::panes::captions::CAPTION_WIDTH,
+            line_height: crate::panes::captions::CAPTION_LINE_HEIGHT,
+            ..model::TextStyle::default()
+        };
+        if let Some(title) = self.apply(Command::AddTextClip {
+            track_id: None,
+            above: true,
+            start: 0.0,
+            style: Some(style),
+            duration: Some(over),
+            offset_y: Some(HOOK_PLACE),
+        }) {
+            let landing = self.pop_commands(std::slice::from_ref(&title));
+            if !landing.is_empty() {
+                self.apply(Command::Batch { commands: landing });
+            }
+        }
+
+        self.raise_watermark();
+        self.playhead = 0.0;
+        self.podscout.open = false;
+        // The caption is the one thing with nowhere to go on a timeline,
+        // so it goes where it can be read and copied.
+        if pick.caption.is_empty() {
+            self.notify(&tf("Cut: {0}", &[&pick.title]), false);
+        } else {
+            self.notify(&pick.caption, false);
+        }
+    }
+
+    /// The one selected video clip, when exactly one video clip is
+    /// selected - or the clip a menu was opened on.
+    fn selected_video(&self) -> Option<Clip> {
+        self.selection
+            .iter()
+            .chain(self.menu_target.iter())
+            .filter_map(|id| self.clip(id))
+            .find(|clip| clip.kind == model::ClipKind::Video)
+            .cloned()
+    }
+
     /// Puts the watermark back on the topmost lane.
     ///
     /// A lane is added above every lane there is, so whatever is laid last
@@ -8959,6 +9149,48 @@ impl Studio {
                     .as_slice(),
             ),
         });
+        app.set_podscout(PodscoutSheetData {
+            open: self.podscout.open,
+            title: self
+                .podscout
+                .sheet
+                .as_ref()
+                .map(|sheet| sheet.title.as_str())
+                .unwrap_or_default()
+                .into(),
+            message: self.podscout.message.as_str().into(),
+            picks: ModelRc::from(
+                self.podscout
+                    .sheet
+                    .iter()
+                    .flat_map(|sheet| sheet.picks.iter())
+                    .map(|pick| PodscoutPickData {
+                        score: if pick.score > 0 {
+                            pick.score.to_string()
+                        } else {
+                            "-".to_owned()
+                        }
+                        .into(),
+                        title: pick.title.as_str().into(),
+                        // Built here so the sheet does no arithmetic.
+                        where_when: format!(
+                            "{:.0} s · {}:{:02}",
+                            pick.body.length(),
+                            (pick.body.from as i64) / 60,
+                            (pick.body.from as i64) % 60
+                        )
+                        .into(),
+                        on_screen: pick.on_screen.as_str().into(),
+                        // The same rule the cut itself uses: a hook that is
+                        // the body's own opening is not a cold open.
+                        cold: pick
+                            .hook
+                            .is_some_and(|hook| (hook.from - pick.body.from).abs() > 1.0),
+                    })
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            ),
+        });
         app.set_downloader(DownloaderSheetData {
             open: self.downloader.open,
             url: self.downloader.url.as_str().into(),
@@ -9835,6 +10067,17 @@ pub struct BrollHit {
     /// Where the thumbnail landed, when it did. A card with no picture is
     /// a worse card, not a missing one.
     pub still: Option<std::path::PathBuf>,
+}
+
+/// The Podscout sheet: a read of the finder's own notes.
+#[derive(Clone, Debug, Default)]
+pub struct PodscoutSheet {
+    /// The sheet is up.
+    pub open: bool,
+    /// What was read, once a file has been.
+    pub sheet: Option<concat_host::podscout::Sheet>,
+    /// Why nothing happened, when nothing did.
+    pub message: String,
 }
 
 /// The B-roll sheet: a key, a search, and what came back.

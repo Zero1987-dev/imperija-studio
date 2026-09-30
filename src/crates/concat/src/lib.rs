@@ -628,6 +628,9 @@ pub fn run() -> Result<(), slint::PlatformError> {
     editor.on_add_hook(on_window!(|state| {
         state.add_hook();
     }));
+    editor.on_open_podscout(on_window!(|state| {
+        state.open_podscout();
+    }));
     editor.on_media_activate(on_window!(|state, id: i32| {
         state.place_at_playhead(&format!("media:{id}"));
     }));
@@ -1376,6 +1379,12 @@ pub fn run() -> Result<(), slint::PlatformError> {
     }));
     app.on_broll_fill(on_window!(|state| {
         state.broll_auto();
+    }));
+    app.on_podscout_closed(on_window!(|state| {
+        state.close_podscout();
+    }));
+    app.on_podscout_make(on_window!(|state, index: i32| {
+        state.podscout_make(index);
     }));
     app.on_downloader_url_edited(on_window!(|state, text: SharedString| {
         state.downloader_url(text.as_str());

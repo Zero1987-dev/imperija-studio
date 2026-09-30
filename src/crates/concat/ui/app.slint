@@ -28,6 +28,7 @@ import { RelinkDialog, RelinkData, MissingMediaItem } from "dialogs/relink.slint
 import { CaptionsDialog, CaptionsSheetData } from "dialogs/captions.slint";
 import { DownloaderDialog, DownloaderSheetData } from "dialogs/downloader.slint";
 import { BrollDialog, BrollSheetData, BrollHitData } from "dialogs/broll.slint";
+import { PodscoutDialog, PodscoutSheetData, PodscoutPickData } from "dialogs/podscout.slint";
 import { SpeechDialog, SpeechSheetData } from "dialogs/speech.slint";
 import { DockDivider, DockSide, SeatBox } from "dock.slint";
 import { Editor } from "editor.slint";
@@ -247,6 +248,7 @@ export component App inherits Window {
     in property <DownloaderSheetData> downloader;
     /// The B-roll sheet: a key, a search, and what came back.
     in property <BrollSheetData> broll;
+    in property <PodscoutSheetData> podscout;
     in property <[string]> caption-models;
     callback captions-closed();
     callback captions-text-edited(text: string);
@@ -262,6 +264,8 @@ export component App inherits Window {
     callback broll-search();
     callback broll-add(index: int);
     callback broll-fill();
+    callback podscout-closed();
+    callback podscout-make(index: int);
 
     callback downloader-closed();
     callback downloader-url-edited(text: string);
@@ -650,6 +654,17 @@ export component App inherits Window {
         search => { root.broll-search(); }
         add(index) => { root.broll-add(index); }
         fill => { root.broll-fill(); }
+    }
+
+    PodscoutDialog {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        data: root.podscout;
+
+        closed => { root.podscout-closed(); }
+        make(index) => { root.podscout-make(index); }
     }
 
     DownloaderDialog {
