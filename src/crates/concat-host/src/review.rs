@@ -126,35 +126,65 @@ pub enum Weight {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Kind {
     /// The file is not the shape a feed wants, width over height.
-    NotTall { aspect: f64 },
+    NotTall {
+        /// What it is, width over height.
+        aspect: f64,
+    },
     /// Shorter than [`SWEET`].
-    Short { seconds: f64 },
+    Short {
+        /// How long it runs.
+        seconds: f64,
+    },
     /// Longer than [`SWEET`].
-    Long { seconds: f64 },
+    Long {
+        /// How long it runs.
+        seconds: f64,
+    },
     /// No face found at all through this stretch.
     NoFace,
     /// A face sitting past the frame's edge by more than [`EDGE`].
     FaceCut,
     /// A face smaller than [`FACE_LEAST`], given as the height found.
-    FaceSmall { height: f64 },
+    FaceSmall {
+        /// The height found, as a fraction of the frame.
+        height: f64,
+    },
     /// The subject's centre above [`BAND`], given as the height found.
-    FaceHigh { at: f64 },
+    FaceHigh {
+        /// Where the middle of it sits, down the frame.
+        at: f64,
+    },
     /// And below it.
-    FaceLow { at: f64 },
+    FaceLow {
+        /// Where the middle of it sits, down the frame.
+        at: f64,
+    },
     /// The subject moving faster than [`WANDER`], in frame widths a second.
-    Wander { per_second: f64 },
+    Wander {
+        /// How fast, in frame widths a second.
+        per_second: f64,
+    },
     /// Frames under [`DARK`].
     Dark,
     /// Frames that do not change.
     Frozen,
     /// Quieter than [`TARGET_LOUDNESS`] by more than the slack.
-    Quiet { lufs: f64 },
+    Quiet {
+        /// How loud it actually is.
+        lufs: f64,
+    },
     /// And louder.
-    Loud { lufs: f64 },
+    Loud {
+        /// How loud it actually is.
+        lufs: f64,
+    },
     /// Samples pinned at full scale.
     Clipped,
     /// The opening with nothing in it, in seconds.
-    DeadOpen { seconds: f64 },
+    DeadOpen {
+        /// How much of the opening has nothing in it.
+        seconds: f64,
+    },
 }
 
 /// One thing found, and where.

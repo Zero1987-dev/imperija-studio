@@ -5536,6 +5536,11 @@ impl Studio {
             return;
         };
 
+        // Trimmed, placed and faded in one step, so a single undo takes
+        // the whole watermark off rather than leaving it full-frame and
+        // opaque in the middle of the picture.
+        let mut commands = Vec::new();
+
         // A still comes in at whatever length the project gives one, which
         // is rarely the length of the edit. Positive drags the tail right,
         // which lengthens - see `TrimClip`, and see the b-roll, which sent
@@ -5544,7 +5549,7 @@ impl Studio {
         if let Some(clip) = self.clip(&clip_id) {
             let short = over - clip.duration;
             if short.abs() > 1e-3 {
-                self.apply(Command::TrimClip {
+                commands.push(Command::TrimClip {
                     clip_id: clip_id.clone(),
                     edge: TrimEdge::End,
                     delta: short,
@@ -5554,7 +5559,7 @@ impl Studio {
         }
 
         let (scale, offset_x, offset_y) = watermark_placing(logo_w / logo_h, frame_aspect);
-        self.apply(Command::SetClipTransform {
+        commands.push(Command::SetClipTransform {
             clip_id: clip_id.clone(),
             scale: Some(scale),
             offset_x: Some(offset_x),
@@ -5563,14 +5568,18 @@ impl Studio {
             stretch_x: None,
             stretch_y: None,
         });
-        self.apply(Command::UpdateClip {
-            clip_id,
+        commands.push(Command::UpdateClip {
+            clip_id: clip_id.clone(),
             patch: ClipPatch {
                 opacity: Some(WATERMARK_OPACITY),
                 ..ClipPatch::default()
             },
         });
-        self.commit_now();
+        self.apply(Command::Batch { commands });
+
+        // Selected, because the next thing anybody does with a watermark is
+        // move it.
+        self.selection = vec![clip_id];
         self.notify(&tf("{0} is on every frame now", &[&name]), false);
     }
 
@@ -9768,7 +9777,10 @@ pub(crate) fn watermark_placing(logo_aspect: f64, frame_aspect: f64) -> (f64, f6
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, Footprint, Studio, key_commands, place_in, shown, write_keyable};
+    use super::{
+        Command, Footprint, Studio, WATERMARK_DROP, WATERMARK_INSET, WATERMARK_WIDTH, key_commands,
+        place_in, shown, watermark_placing, write_keyable,
+    };
 
     const FRAME: (u32, u32) = (1920, 1080);
 
