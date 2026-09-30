@@ -284,92 +284,6 @@ pub fn cues(captions: &[(f64, f64, String)], spacing: f64, length: f64) -> Vec<C
     cues
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn line(at: f64, text: &str) -> (f64, f64, String) {
-        (at, at + 1.5, text.to_owned())
-    }
-
-    #[test]
-    fn the_word_worth_a_picture_is_not_the_one_holding_the_sentence_together() {
-        assert_eq!(
-            subject_of("and then I bought a motorcycle with it"),
-            Some("motorcycle".to_owned())
-        );
-        assert_eq!(
-            subject_of("to je bila najbolja investicija"),
-            Some("investicija".to_owned())
-        );
-        // Nothing but grammar is nothing to search for.
-        assert_eq!(subject_of("and so it was that they were"), None);
-        assert_eq!(subject_of("ali ako je to tako"), None);
-        assert_eq!(subject_of(""), None);
-        // Numbers are not pictures.
-        assert_eq!(subject_of("2026 and 1999"), None);
-    }
-
-    #[test]
-    fn cutaways_are_spaced_out_rather_than_one_a_sentence() {
-        let captions = vec![
-            line(0.0, "I bought a motorcycle"),
-            line(2.0, "the weather was terrible"),
-            line(4.0, "we drove to the mountains"),
-            line(20.0, "and the restaurant was closed"),
-        ];
-        let found = cues(&captions, APART, LENGTH);
-        assert_eq!(found.len(), 2, "{found:?}");
-        assert!((found[0].at - 0.0).abs() < 1e-9);
-        assert!((found[1].at - 20.0).abs() < 1e-9);
-        assert!(found[1].at - found[0].at >= APART);
-    }
-
-    #[test]
-    fn the_same_picture_is_never_asked_for_twice() {
-        let captions = vec![
-            line(0.0, "I bought a motorcycle"),
-            line(10.0, "the motorcycle was red"),
-            line(20.0, "and then the restaurant"),
-        ];
-        let found = cues(&captions, APART, LENGTH);
-        assert_eq!(found.len(), 2, "{found:?}");
-        assert_eq!(found[0].words, "motorcycle");
-        assert_eq!(found[1].words, "restaurant");
-    }
-
-    #[test]
-    fn a_cutaway_runs_its_own_length_and_lands_on_the_line() {
-        let captions = vec![line(5.0, "I bought a motorcycle")];
-        let found = cues(&captions, APART, LENGTH);
-        assert_eq!(found.len(), 1);
-        assert!((found[0].at - 5.0).abs() < 1e-9);
-        assert!((found[0].until - (5.0 + LENGTH)).abs() < 1e-9);
-    }
-
-    #[test]
-    fn captions_in_any_order_come_out_in_time_order() {
-        let captions = vec![
-            line(20.0, "and then the restaurant"),
-            line(0.0, "I bought a motorcycle"),
-            line(40.0, "the mountains were quiet"),
-        ];
-        let found = cues(&captions, APART, LENGTH);
-        assert_eq!(found.len(), 3);
-        for pair in found.windows(2) {
-            assert!(pair[0].at < pair[1].at, "{pair:?}");
-        }
-    }
-
-    #[test]
-    fn nothing_to_read_is_no_cutaways_rather_than_a_panic() {
-        assert!(cues(&[], APART, LENGTH).is_empty());
-        assert!(cues(&[line(0.0, "and so it was")], APART, LENGTH).is_empty());
-        // A spacing of nothing is still a spacing, not a division by zero.
-        assert_eq!(cues(&[line(0.0, "motorcycle")], 0.0, LENGTH).len(), 1);
-    }
-}
-
 /// How far into a stock clip the search for an opening begins, as a
 /// fraction of the file.
 ///
@@ -513,4 +427,90 @@ fn picture(frame: &concat_core::Frame) -> (f64, f64) {
     let mean = levels.iter().sum::<f64>() / levels.len() as f64;
     let spread = levels.iter().map(|level| (level - mean).abs()).sum::<f64>() / levels.len() as f64;
     (mean, spread)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(at: f64, text: &str) -> (f64, f64, String) {
+        (at, at + 1.5, text.to_owned())
+    }
+
+    #[test]
+    fn the_word_worth_a_picture_is_not_the_one_holding_the_sentence_together() {
+        assert_eq!(
+            subject_of("and then I bought a motorcycle with it"),
+            Some("motorcycle".to_owned())
+        );
+        assert_eq!(
+            subject_of("to je bila najbolja investicija"),
+            Some("investicija".to_owned())
+        );
+        // Nothing but grammar is nothing to search for.
+        assert_eq!(subject_of("and so it was that they were"), None);
+        assert_eq!(subject_of("ali ako je to tako"), None);
+        assert_eq!(subject_of(""), None);
+        // Numbers are not pictures.
+        assert_eq!(subject_of("2026 and 1999"), None);
+    }
+
+    #[test]
+    fn cutaways_are_spaced_out_rather_than_one_a_sentence() {
+        let captions = vec![
+            line(0.0, "I bought a motorcycle"),
+            line(2.0, "the weather was terrible"),
+            line(4.0, "we drove to the mountains"),
+            line(20.0, "and the restaurant was closed"),
+        ];
+        let found = cues(&captions, APART, LENGTH);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!((found[0].at - 0.0).abs() < 1e-9);
+        assert!((found[1].at - 20.0).abs() < 1e-9);
+        assert!(found[1].at - found[0].at >= APART);
+    }
+
+    #[test]
+    fn the_same_picture_is_never_asked_for_twice() {
+        let captions = vec![
+            line(0.0, "I bought a motorcycle"),
+            line(10.0, "the motorcycle was red"),
+            line(20.0, "and then the restaurant"),
+        ];
+        let found = cues(&captions, APART, LENGTH);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0].words, "motorcycle");
+        assert_eq!(found[1].words, "restaurant");
+    }
+
+    #[test]
+    fn a_cutaway_runs_its_own_length_and_lands_on_the_line() {
+        let captions = vec![line(5.0, "I bought a motorcycle")];
+        let found = cues(&captions, APART, LENGTH);
+        assert_eq!(found.len(), 1);
+        assert!((found[0].at - 5.0).abs() < 1e-9);
+        assert!((found[0].until - (5.0 + LENGTH)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn captions_in_any_order_come_out_in_time_order() {
+        let captions = vec![
+            line(20.0, "and then the restaurant"),
+            line(0.0, "I bought a motorcycle"),
+            line(40.0, "the mountains were quiet"),
+        ];
+        let found = cues(&captions, APART, LENGTH);
+        assert_eq!(found.len(), 3);
+        for pair in found.windows(2) {
+            assert!(pair[0].at < pair[1].at, "{pair:?}");
+        }
+    }
+
+    #[test]
+    fn nothing_to_read_is_no_cutaways_rather_than_a_panic() {
+        assert!(cues(&[], APART, LENGTH).is_empty());
+        assert!(cues(&[line(0.0, "and so it was")], APART, LENGTH).is_empty());
+        // A spacing of nothing is still a spacing, not a division by zero.
+        assert_eq!(cues(&[line(0.0, "motorcycle")], 0.0, LENGTH).len(), 1);
+    }
 }
