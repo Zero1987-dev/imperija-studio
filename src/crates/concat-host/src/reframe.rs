@@ -139,7 +139,11 @@ impl Reframers {
     }
 
     /// The detector, fetched on first use and kept.
-    fn detector(
+    ///
+    /// Public because the review reads a finished file with the same
+    /// model, and loading a second copy of it to do so would be two
+    /// hundred kilobytes and a second download for nothing.
+    pub fn detector(
         &self,
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(Progress),

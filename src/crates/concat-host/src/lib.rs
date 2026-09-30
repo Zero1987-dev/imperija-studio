@@ -40,6 +40,7 @@ pub mod projects;
 pub mod proxy;
 pub mod punch;
 pub mod reframe;
+pub mod review;
 pub mod session;
 pub mod templates;
 pub mod titles;

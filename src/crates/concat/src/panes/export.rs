@@ -13,7 +13,11 @@
 //! pane reads and asks things of but never reaches into for its own
 //! fields.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use concat_host::export::{self, ExportSpec};
+use concat_host::review::{self, Kind, Note, Weight};
 use concat_media::ColorRange;
 
 use crate::format::{bytes, eta};
@@ -24,7 +28,7 @@ use crate::platform;
 use crate::studio::{
     AUDIO_BPS, EXPORT_CRF, EXPORT_RATES, EXPORT_SHORT_SIDES, EXPORT_TIERS, Studio, home_folder,
 };
-use crate::ui::{ExportData, ExportPhase};
+use crate::ui::{CheckNote, ExportData, ExportPhase};
 
 /// Everything that can happen to the export sheet.
 #[derive(Clone, Debug)]
@@ -64,6 +68,10 @@ pub enum ExportMsg {
     },
     /// The render's worker is done: the file written, or why not.
     Finished(Result<String, String>),
+    /// The check reading the written file back, `0..=1`.
+    Checking(f32),
+    /// The check is done: what it found, or why it could not look.
+    Checked(Result<Vec<Note>, String>),
 }
 
 /// The export sheet's state.
@@ -94,6 +102,17 @@ pub struct ExportPane {
     pub message: String,
     /// Where the finished file is, for Reveal.
     pub written: String,
+    /// The written file is being read back.
+    pub checking: bool,
+    /// How far through that reading, `0..=1`.
+    pub check_progress: f32,
+    /// The reading finished, whatever it found. Apart from `notes` being
+    /// empty, which is the good answer, and being empty because nothing has
+    /// looked yet, which is not the same thing.
+    pub checked: bool,
+    /// What the check found, worst first is not wanted here: in the order
+    /// they happen, which is the order somebody watching meets them.
+    pub notes: Vec<Note>,
     /// When the render started, for a real ETA.
     started_at: Option<std::time::Instant>,
 }
@@ -118,6 +137,10 @@ impl Default for ExportPane {
             stage: String::new(),
             message: String::new(),
             written: String::new(),
+            checking: false,
+            check_progress: 0.0,
+            checked: false,
+            notes: Vec::new(),
             started_at: None,
         }
     }
@@ -158,6 +181,9 @@ impl ExportPane {
             ExportMsg::Again => {
                 self.phase = ExportPhase::Idle;
                 self.progress = 0.0;
+                self.checking = false;
+                self.checked = false;
+                self.notes.clear();
             }
             ExportMsg::Browse => {
                 if let Some(folder) = platform::pick_folder(&i18n::t("Export to"), &self.folder) {
@@ -186,8 +212,34 @@ impl ExportPane {
             ExportMsg::Finished(Ok(written)) => {
                 self.phase = ExportPhase::Done;
                 self.progress = 1.0;
-                self.written = written;
+                self.written = written.clone();
                 studio.notify(&t("Export finished"), false);
+                self.check(&written, studio);
+            }
+            ExportMsg::Checking(fraction) => {
+                if self.checking {
+                    self.check_progress = fraction.clamp(0.0, 1.0);
+                }
+            }
+            ExportMsg::Checked(found) => {
+                self.checking = false;
+                self.check_progress = 1.0;
+                match found {
+                    Ok(notes) => {
+                        self.checked = true;
+                        let faults = notes.iter().filter(|n| n.weight == Weight::Stop).count();
+                        self.notes = notes;
+                        if faults > 0 {
+                            studio.notify(&tf("Checked: {0} to fix", &[&faults]), true);
+                        }
+                    }
+                    // A file that cannot be read back is not a file that is
+                    // wrong: say so quietly and leave the export alone.
+                    Err(error) => {
+                        self.checked = false;
+                        studio.notify(&tf("Could not check the file: {0}", &[&error]), true);
+                    }
+                }
             }
             ExportMsg::Finished(Err(error)) => {
                 if self.phase == ExportPhase::Idle {
@@ -254,6 +306,47 @@ impl ExportPane {
     }
 
     /// Starts the render on a worker. Its reports come back as messages.
+    /// Reads the file just written back and says what is wrong with it.
+    ///
+    /// Started without being asked for, because a check somebody has to
+    /// remember to run is a check nobody runs. It costs a few seconds on a
+    /// machine that has just spent minutes rendering, and it is the only
+    /// thing in the program that looks at what was actually made rather
+    /// than at what was meant.
+    fn check(&mut self, written: &str, studio: &mut Studio) {
+        self.checking = true;
+        self.checked = false;
+        self.check_progress = 0.0;
+        self.notes.clear();
+
+        let path = written.to_owned();
+        let reframers = Arc::clone(&studio.host.reframers);
+        spawn(
+            // The return type is spelled out because the body asks a
+            // question with `?` before it answers one, and inference will
+            // not take the error type from a line it has not reached.
+            move || -> Result<Vec<Note>, String> {
+                // Never set: the read is seconds long and there is nothing
+                // to press. It is here because `look_over` polls it between
+                // frames, which is what lets it be cancellable later.
+                let cancel = AtomicBool::new(false);
+                let mut last = -1.0f32;
+                let mut fetching = |_: concat_host::reframe::Progress| {};
+                let detector = reframers.detector(&cancel, &mut fetching)?;
+                let mut report = |fraction: f32| {
+                    if fraction - last >= 0.02 {
+                        last = fraction;
+                        on_ui(move |studio, _, _| {
+                            studio.handle(Msg::Export(ExportMsg::Checking(fraction)));
+                        });
+                    }
+                };
+                review::look_over(&path, &detector, &cancel, &mut report)
+            },
+            |studio, _, _, found| studio.handle(Msg::Export(ExportMsg::Checked(found))),
+        );
+    }
+
     fn start(&mut self, studio: &mut Studio) {
         let Some(session) = studio.session.as_ref() else {
             return;
@@ -419,6 +512,64 @@ impl ExportPane {
             message: self.message.as_str().into(),
             done_size: bytes(self.size_bytes(studio, self.quality)).into(),
             empty: clips == 0,
+            checking: self.checking,
+            check_progress: self.check_progress,
+            checked: self.checked,
+            notes: slint::ModelRc::from(
+                self.notes
+                    .iter()
+                    .map(|note| CheckNote {
+                        stop: note.weight == Weight::Stop,
+                        at: moment(note).into(),
+                        said: said(note.kind).into(),
+                    })
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            ),
         }
+    }
+}
+
+/// Where a note is, as a clock reading. Empty for one about the whole file.
+///
+/// A note about the whole file is the one with no span at all, which is how
+/// `review` marks them: a real note at the very start still runs to
+/// somewhere.
+fn moment(note: &Note) -> String {
+    if note.at == 0.0 && note.until == 0.0 {
+        return String::new();
+    }
+    let whole = note.at.max(0.0) as i64;
+    format!("{}:{:02}", whole / 60, whole % 60)
+}
+
+/// What a note says, in the person's language.
+///
+/// Worded here rather than in `concat-host` for the reason every other
+/// string is: the host does not know what language the window is in, and
+/// should not have to.
+fn said(kind: Kind) -> String {
+    match kind {
+        Kind::NotTall { .. } => t("The picture is not 9:16"),
+        Kind::Short { seconds } => tf("Short for a feed: {0}s", &[&seconds.round()]),
+        Kind::Long { seconds } => tf("Long for a feed: {0}s", &[&seconds.round()]),
+        Kind::NoFace => t("No face in shot here"),
+        Kind::FaceCut => t("The frame cuts the face"),
+        Kind::FaceSmall { .. } => t("The face is small for a phone"),
+        Kind::FaceHigh { .. } => t("The head sits too high in frame"),
+        Kind::FaceLow { .. } => t("The head sits too low in frame"),
+        Kind::Wander { .. } => t("The shot drifts rather than holds"),
+        Kind::Dark => t("The picture goes black"),
+        Kind::Frozen => t("The picture stops moving"),
+        Kind::Quiet { lufs } => tf("Quiet for a feed: {0} LUFS", &[&format!("{lufs:.0}")]),
+        Kind::Loud { lufs } => tf(
+            "Louder than a feed keeps: {0} LUFS",
+            &[&format!("{lufs:.0}")],
+        ),
+        Kind::Clipped => t("The sound clips"),
+        Kind::DeadOpen { seconds } => tf(
+            "Nothing is heard for the first {0}s",
+            &[&format!("{seconds:.1}")],
+        ),
     }
 }

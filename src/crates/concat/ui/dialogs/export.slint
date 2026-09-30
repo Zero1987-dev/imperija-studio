@@ -17,6 +17,19 @@ import { Switch } from "../inspector/controls.slint";
 
 export enum ExportPhase { idle, running, done, failed }
 
+// One thing the check found in the finished file.
+//
+// Already worded and already timed: the sheet shows what it is handed and
+// works nothing out, the same rule the b-roll cards follow.
+export struct CheckNote {
+    /// true for a fault that will show, false for a judgement call
+    stop: bool,
+    /// "0:14", or empty for a note about the whole file
+    at: string,
+    /// what it says, in the person's language
+    said: string,
+}
+
 export struct ExportData {
     open: bool,
     /// the file name, without folder or extension
@@ -60,6 +73,14 @@ export struct ExportData {
     done-size: string,
     /// nothing on the timeline to export
     empty: bool,
+    /// the written file is being read back
+    checking: bool,
+    /// how far through that reading, 0..1
+    check-progress: float,
+    /// the reading finished, whatever it found
+    checked: bool,
+    /// what it found. Empty with `checked` means a clean file.
+    notes: [CheckNote],
 }
 
 // One tile of the summary block.
@@ -463,6 +484,80 @@ export component ExportDialog inherits Modal {
                     font-size: Theme.fs;
                     font-weight: Theme.weight-title;
                     vertical-alignment: center;
+                }
+            }
+
+            // The check, in the one place a person is already looking: the
+            // sheet they just watched finish. A separate window would be a
+            // window nobody opens.
+            if root.data.phase == ExportPhase.done && root.data.checking: Text {
+                text: I18n.t("Looking the file over…");
+                color: Theme.fg-muted;
+                font-size: Theme.fs;
+            }
+
+            if root.data.phase == ExportPhase.done && root.data.checking:
+            Progress { value: root.data.check-progress; }
+
+            if root.data.phase == ExportPhase.done && root.data.checked
+                && root.data.notes.length == 0: HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                VerticalLayout {
+                    alignment: center;
+                    Icon { glyph: Glyph.check; size: 13px; tint: Theme.fg-muted; }
+                }
+
+                Text {
+                    text: I18n.t("Checked: nothing worth fixing");
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs;
+                    vertical-alignment: center;
+                }
+            }
+
+            if root.data.phase == ExportPhase.done && root.data.notes.length > 0:
+            VerticalLayout {
+                spacing: 1px;
+
+                for note in root.data.notes: Rectangle {
+                    background: Theme.raised;
+                    height: 28px;
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 8px;
+
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: note.stop ? Theme.danger : Theme.meter-mid;
+                            }
+                        }
+
+                        Text {
+                            text: note.at;
+                            width: 30px;
+                            color: Theme.fg-muted;
+                            font-family: Theme.font-technical;
+                            font-size: Theme.fs-sm;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: note.said;
+                            color: Theme.fg;
+                            font-size: Theme.fs-sm;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                    }
                 }
             }
 
