@@ -5350,6 +5350,11 @@ impl Studio {
                     // Trimmed to the cue rather than run at its own length:
                     // a cutaway outliving the sentence it illustrates is
                     // just a cut to somewhere else.
+                    //
+                    // Negative, because a tail dragged *right* lengthens -
+                    // see `TrimClip`. Sent positive the first time, which
+                    // stretched every cutaway to the end of its file
+                    // instead of cropping it.
                     let wanted = (cue.until - cue.at).max(0.4);
                     if let Some(clip) = studio.clip(&clip_id) {
                         let over = clip.duration - wanted;
@@ -5357,7 +5362,7 @@ impl Studio {
                             studio.apply(Command::TrimClip {
                                 clip_id,
                                 edge: TrimEdge::End,
-                                delta: over,
+                                delta: -over,
                                 ripple: false,
                             });
                         }
