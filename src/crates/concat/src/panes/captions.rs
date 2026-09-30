@@ -26,9 +26,38 @@ use crate::ui::CaptionsSheetData;
 
 /// Where a caption sits, by the sheet's row: a frame-height fraction from
 /// the centre, positive down. Bottom, centre, top.
-const CAPTION_OFFSETS: [f64; 3] = [0.35, 0.0, -0.35];
+///
+/// Neither end is the end of the frame. The app a tall clip is watched in
+/// draws its own furniture over both: the tabs and the search glass across
+/// the top, and along the bottom the poster's name, their caption and the
+/// music ticker, which together take about the last fifth. A caption put
+/// into either is a caption nobody reads, and there is no warning because
+/// the editor's own picture has none of that over it. So "bottom" stops
+/// short of the bottom and "top" of the top, and both still read as low
+/// and high in frame because everything else is in the middle.
+const CAPTION_OFFSETS: [f64; 3] = [0.28, 0.0, -0.28];
 /// A caption's cap height by the sheet's row, as a fraction of the frame.
 const CAPTION_SIZES: [f64; 3] = [0.04, 0.05, 0.065];
+
+/// The face a caption is set in.
+///
+/// A condensed grotesque with one heavy weight. A feed is watched at
+/// arm's length, one-handed, over whatever the picture happens to be
+/// showing, and the interface's own text face - which is what this was -
+/// is drawn for reading a paragraph on a desk. Anton holds at a glance,
+/// and being condensed it fits more of a sentence on a line before the
+/// line has to break.
+const CAPTION_FAMILY: &str = "Anton";
+
+/// The hard edge drawn round it, as a fraction of the frame.
+///
+/// This and not a shadow. A shadow is help against a dark picture only;
+/// an outline is help against every picture, which matters because the
+/// picture under a caption is a face that moves and a shirt that might
+/// be any colour. Eight thousandths is about two pixels at 1080 wide:
+/// enough to separate the letters from what is behind them, not enough
+/// to thicken them.
+const CAPTION_STROKE: f64 = 0.008;
 /// A rough speaking rate, for a script's timing and the speech sheet's
 /// estimate.
 pub const CHARS_PER_SECOND: f32 = 14.0;
@@ -360,9 +389,16 @@ fn caption_clip(text: String, start: f64, duration: f64, look: (f64, f64)) -> Co
         start,
         style: Some(TextStyle {
             content: text,
-            font_family: "Hanken Grotesk".to_owned(),
+            font_family: CAPTION_FAMILY.to_owned(),
             font_size,
-            font_weight: 600.0,
+            // Anton is drawn at one weight. Asking for a heavier one only
+            // invites the painter to thicken it itself, which is what a
+            // smeared caption looks like.
+            font_weight: 400.0,
+            color: "#ffffff".to_owned(),
+            stroke_width: CAPTION_STROKE,
+            stroke_color: "#000000".to_owned(),
+            shadow: false,
             ..TextStyle::default()
         }),
         duration: Some(duration),

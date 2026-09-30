@@ -189,6 +189,33 @@ pub(crate) const POP_OVER: f64 = 1.06;
 pub(crate) const POP_IN: f64 = 0.09;
 pub(crate) const POP_SETTLE: f64 = 0.17;
 
+/// How wide a watermark sits, as a fraction of the frame's width.
+///
+/// An eighth. Large enough to be read on a phone held at arm's length and
+/// small enough that nobody is looking at it instead of the video, which
+/// is the whole job: a mark somebody remembers having seen without ever
+/// having looked at it.
+pub(crate) const WATERMARK_WIDTH: f64 = 0.13;
+
+/// How far its left edge sits from the frame's, in frame widths.
+pub(crate) const WATERMARK_INSET: f64 = 0.055;
+
+/// And its top edge from the top, in frame heights.
+///
+/// The top tenth of a tall frame belongs to the app the clip is watched
+/// in: the row of tabs and the search glass sit there, and anything put
+/// under them is half a logo. Below that strip, and above everything
+/// else, is the one corner nothing else claims - the rails run down the
+/// right and the caption along the bottom.
+pub(crate) const WATERMARK_DROP: f64 = 0.11;
+
+/// How solid it is.
+///
+/// Not quite full. A logo at full strength reads as part of the picture
+/// and pulls the eye; a little under and it reads as a mark on top of it,
+/// which is what it is.
+pub(crate) const WATERMARK_OPACITY: f64 = 0.9;
+
 /// The frame shapes the launch screen offers, as the ratio behind each
 /// label: width over height.
 ///
@@ -5442,6 +5469,111 @@ impl Studio {
         );
     }
 
+    /// Lays a logo over the whole timeline as a watermark.
+    ///
+    /// A picture picked from disk, on a lane of its own above everything,
+    /// running the length of the edit, scaled to [`WATERMARK_WIDTH`] and
+    /// parked in the top-left corner - which is the one corner of a tall
+    /// frame that a feed does not cover with its own furniture. The rails
+    /// down the right and the caption along the bottom belong to the app
+    /// the clip is watched in; the top strip is its own; what is left is
+    /// here.
+    ///
+    /// Every part of it is an ordinary edit, so the logo can be dragged,
+    /// resized, faded or deleted afterwards like any other clip. Nothing
+    /// about it is special except where it starts.
+    pub fn add_watermark(&mut self) {
+        let Some(chosen) = crate::platform::pick_files(
+            &t("Choose a logo"),
+            Some((
+                t("Images").as_str(),
+                &["png", "webp", "jpg", "jpeg", "gif", "tif", "tiff", "bmp"],
+            )),
+        )
+        .and_then(|paths| paths.into_iter().next()) else {
+            return;
+        };
+        let over = f64::from(self.duration());
+        if over <= 0.0 {
+            self.notify(&t("Put something on the timeline first"), true);
+            return;
+        }
+        let video = &self.timeline().video;
+        if video.width == 0 || video.height == 0 {
+            return;
+        }
+        let frame_aspect = f64::from(video.width) / f64::from(video.height);
+
+        let summary = match concat_host::media::probe(&chosen.to_string_lossy()) {
+            Ok(summary) => summary,
+            Err(error) => {
+                self.notify(&tf("Could not read the logo: {0}", &[&error]), true);
+                return;
+            }
+        };
+        let item = summary.to_new_media();
+        let (logo_w, logo_h) = (
+            f64::from(item.width.unwrap_or(0)),
+            f64::from(item.height.unwrap_or(0)),
+        );
+        if logo_w <= 0.0 || logo_h <= 0.0 {
+            self.notify(&t("That file has no picture in it"), true);
+            return;
+        }
+        let name = item.name.clone();
+        let Some(media_id) = self.apply(Command::AddMedia { item }) else {
+            return;
+        };
+        let Some(lane) = self.apply(Command::AddTrack) else {
+            return;
+        };
+        let Some(clip_id) = self.apply(Command::AddClip {
+            media_id,
+            track_id: lane,
+            start: 0.0,
+            ripple: false,
+        }) else {
+            return;
+        };
+
+        // A still comes in at whatever length the project gives one, which
+        // is rarely the length of the edit. Positive drags the tail right,
+        // which lengthens - see `TrimClip`, and see the b-roll, which sent
+        // this the wrong way round and stretched every cutaway to the end
+        // of its file.
+        if let Some(clip) = self.clip(&clip_id) {
+            let short = over - clip.duration;
+            if short.abs() > 1e-3 {
+                self.apply(Command::TrimClip {
+                    clip_id: clip_id.clone(),
+                    edge: TrimEdge::End,
+                    delta: short,
+                    ripple: false,
+                });
+            }
+        }
+
+        let (scale, offset_x, offset_y) = watermark_placing(logo_w / logo_h, frame_aspect);
+        self.apply(Command::SetClipTransform {
+            clip_id: clip_id.clone(),
+            scale: Some(scale),
+            offset_x: Some(offset_x),
+            offset_y: Some(offset_y),
+            rotation: None,
+            stretch_x: None,
+            stretch_y: None,
+        });
+        self.apply(Command::UpdateClip {
+            clip_id,
+            patch: ClipPatch {
+                opacity: Some(WATERMARK_OPACITY),
+                ..ClipPatch::default()
+            },
+        });
+        self.commit_now();
+        self.notify(&tf("{0} is on every frame now", &[&name]), false);
+    }
+
     /// Opens the Video Downloader sheet.
     pub fn open_downloader(&mut self) {
         self.downloader.open = true;
@@ -9600,6 +9732,40 @@ impl DownloaderSheet {
     }
 }
 
+/// Where a watermark of aspect `logo_aspect` goes in a frame of aspect
+/// `frame_aspect`: its scale, and its offsets from the frame's middle.
+///
+/// At scale 1 a picture is *fitted* - the whole of it inside the frame,
+/// with the rest empty - so the scale that makes it [`WATERMARK_WIDTH`]
+/// across depends on which way round the fitting went. A logo wider than
+/// the frame fitted to the frame's width, so the scale is the width
+/// wanted; a logo taller than the frame fitted to its height, and is
+/// narrower than a frame to start with.
+///
+/// The offsets are from the middle because that is where a transform
+/// measures from, so each is the corner wanted plus half the logo, less
+/// the half-frame. Positive is right and down.
+pub(crate) fn watermark_placing(logo_aspect: f64, frame_aspect: f64) -> (f64, f64, f64) {
+    if logo_aspect <= 0.0 || frame_aspect <= 0.0 {
+        return (WATERMARK_WIDTH, 0.0, 0.0);
+    }
+    // What a fitted picture is across, in frame widths.
+    let fitted = if logo_aspect >= frame_aspect {
+        1.0
+    } else {
+        logo_aspect / frame_aspect
+    };
+    let scale = WATERMARK_WIDTH / fitted;
+    // Its height in frame heights: the width in frame widths, turned into
+    // pixels by the frame's aspect and back into frame heights.
+    let tall = WATERMARK_WIDTH * frame_aspect / logo_aspect;
+    (
+        scale,
+        WATERMARK_INSET + WATERMARK_WIDTH / 2.0 - 0.5,
+        WATERMARK_DROP + tall / 2.0 - 0.5,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Command, Footprint, Studio, key_commands, place_in, shown, write_keyable};
@@ -9627,6 +9793,40 @@ mod tests {
         // 540px tall becomes 540px wide: 270px each side of 1920.
         assert!((hw - 270.0 / 1920.0).abs() < 1e-9);
         assert!((hh - 480.0 / 1080.0).abs() < 1e-9);
+    }
+
+    /// The watermark lands in the top-left corner, clear of the strip a
+    /// feed draws over the top of every tall clip.
+    #[test]
+    fn a_watermark_sits_where_nothing_else_does() {
+        // The SLIP mark, trimmed: wider than it is tall, into 9:16.
+        let (scale, x, y) = watermark_placing(735.0 / 575.0, 0.5625);
+        assert!((scale - WATERMARK_WIDTH).abs() < 1e-9, "{scale}");
+
+        // Back out the edges from the middle, and they are the insets asked
+        // for - which is the thing worth checking, because getting a sign
+        // wrong here puts the logo off the frame rather than in a corner.
+        let across = WATERMARK_WIDTH;
+        let down = WATERMARK_WIDTH * 0.5625 / (735.0 / 575.0);
+        let left = x + 0.5 - across / 2.0;
+        let top = y + 0.5 - down / 2.0;
+        assert!((left - WATERMARK_INSET).abs() < 1e-9, "{left}");
+        assert!((top - WATERMARK_DROP).abs() < 1e-9, "{top}");
+        assert!(left + across < 0.5, "the mark reaches the middle");
+        assert!(top + down < 0.25, "the mark reaches into the picture");
+    }
+
+    /// A logo taller than the frame is still the width asked for.
+    #[test]
+    fn a_tall_watermark_is_scaled_up_not_down() {
+        // Half as wide as it is tall, which in a 9:16 frame fits by height
+        // and is therefore already narrower than the frame.
+        let (scale, ..) = watermark_placing(0.5, 0.5625);
+        // Fitted it is 0.5/0.5625 of a frame width across, so reaching
+        // WATERMARK_WIDTH takes more than that fraction, not less.
+        let fitted = 0.5 / 0.5625;
+        assert!((scale - WATERMARK_WIDTH / fitted).abs() < 1e-9, "{scale}");
+        assert!(scale > WATERMARK_WIDTH, "{scale}");
     }
 
     /// The nearest pair inside the pull wins, and nothing outside it pulls.
