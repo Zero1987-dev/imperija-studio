@@ -263,6 +263,30 @@ pub const ZOOM_MAX: f64 = 1.5;
 /// worse than softness, and that is a floor, not a preference.
 pub const STRETCH_MAX: f64 = 1.15;
 
+/// How far past covering a source may be pushed when covering already
+/// stretches it.
+///
+/// [`STRETCH_MAX`] asks the wrong question of a wide shot in a tall frame.
+/// It asks how much enlargement is invisible, and the answer for a tall
+/// slice of a 1920-wide source is "less than you are already doing": at
+/// 1080 across, covering is a stretch of 1.78 before any zoom, so the
+/// allowance is spent before the camera has moved and the zoom is refused
+/// outright. Which is not a decision to keep the picture sharp - the
+/// stretch happens either way - it is a decision to waste a quarter of the
+/// frame on a desk.
+///
+/// So a source that covering already stretches is judged against covering
+/// instead: a quarter further in, which is what it takes to lose the
+/// furniture under a podcast host and fill the frame with the person
+/// talking. Rendered out at 1.00, 1.12 and 1.24 and looked at: at 1.00 the
+/// laptop lid takes the bottom fifth and the caption sits on it; by 1.24
+/// it is gone and the face is the size a phone wants. The softness over
+/// that range is not what anybody notices.
+///
+/// A source with pixels to spare - 4K, or anything shot tall - never
+/// reaches this, and keeps [`STRETCH_MAX`].
+pub const PUSH_MAX: f64 = 1.25;
+
 /// Where down the frame the face's box is placed.
 ///
 /// Dead centre leaves as much room above the head as below the chest and
@@ -354,7 +378,15 @@ pub fn framing(
         // `s * frame_width / source_width`. Solving that for the largest
         // scale within [`STRETCH_MAX`] is the whole of this.
         let affordable = STRETCH_MAX * source_width / frame_width;
-        ceiling = ceiling.min(affordable.max(cover));
+        // A source that cannot even cover the frame out of its own pixels
+        // is judged against covering rather than against itself; see
+        // [`PUSH_MAX`]. One with room to spare keeps its own allowance.
+        let allowance = if affordable < cover {
+            cover * PUSH_MAX
+        } else {
+            affordable
+        };
+        ceiling = ceiling.min(allowance.max(cover));
     }
     wanted.clamp(cover, ceiling)
 }
@@ -1054,22 +1086,38 @@ mod tests {
     }
 
     #[test]
-    fn a_source_with_no_pixels_to_spare_is_not_zoomed_into() {
-        // The fault this exists for. A 9:16 slice of a 1920-wide frame is
-        // 608 pixels across and is already shown at 1080; zooming further
-        // trades sharpness for a bigger face and loses.
+    fn a_source_with_no_pixels_to_spare_is_pushed_only_so_far() {
+        // A 9:16 slice of a 1920-wide frame is 608 pixels across and is
+        // already shown at 1080. Refusing to zoom does not undo that
+        // stretch - it only spends the frame on whatever the wide shot had
+        // under the speaker - so the limit is against covering instead.
         let cover = cover_scale(WIDE, TALL);
         let tight = framing(FACE_HEIGHT / 3.0, WIDE, TALL, 1920.0, 1080.0);
+        assert!(tight > cover, "a 1080p source was not pushed in at all");
         assert!(
-            (tight - cover).abs() < 1e-9,
-            "a 1080p source was zoomed to {tight}, past covering at {cover}"
+            tight <= cover * PUSH_MAX + 1e-9,
+            "pushed to {}x covering, past {PUSH_MAX}",
+            tight / cover
         );
-        // The same shot from 4K has the pixels, and is zoomed.
+
+        // The same shot from 4K has its own pixels and is judged against
+        // them, which lets it go further than the push allowance.
         let roomy = framing(FACE_HEIGHT / 3.0, WIDE, TALL, 3840.0, 1080.0);
-        assert!(roomy > cover, "a 4K source was not zoomed at all: {roomy}");
-        // But never so far that it is stretched past the allowance.
+        assert!(roomy > tight, "4K was not allowed further than 1080p");
         let stretch = roomy * 1080.0 / 3840.0;
         assert!(stretch <= STRETCH_MAX + 1e-9, "stretched {stretch}x");
+    }
+
+    #[test]
+    fn a_source_with_room_keeps_its_own_allowance() {
+        // Shot tall already: covering is 1, so the pixels are the limit and
+        // the push allowance must not loosen it.
+        let scale = framing(FACE_HEIGHT / 3.0, TALL, TALL, 1080.0, 1080.0);
+        let stretch = scale * 1080.0 / 1080.0;
+        assert!(
+            stretch <= STRETCH_MAX + 1e-9,
+            "a native source was stretched {stretch}x"
+        );
     }
 
     #[test]

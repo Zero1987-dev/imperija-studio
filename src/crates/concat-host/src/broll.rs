@@ -210,7 +210,7 @@ pub const GRAMMAR: &[&str] = &[
 /// Long enough to register, short enough that the person talking is not
 /// gone. Anything past three seconds and the viewer starts wondering where
 /// the speaker went.
-pub const LENGTH: f64 = 2.4;
+pub const LENGTH: f64 = 1.8;
 
 /// And the least time between two of them.
 ///
@@ -218,9 +218,25 @@ pub const LENGTH: f64 = 2.4;
 /// where they stop reading as decoration and start reading as illustration.
 pub const APART: f64 = 8.0;
 
-/// The shortest word worth a picture. Under this it is grammar the list
-/// above happened to miss.
-pub const SHORTEST_WORD: usize = 4;
+/// The shortest word worth a picture.
+///
+/// Six, not four. Four lets through every short concrete noun in the
+/// language, and a stock library will happily answer one of those with
+/// something that has nothing to do with the sentence: asked for "corn" it
+/// came back with a full-screen photograph of hazelnuts, laid over a man
+/// talking about social media. A word that short carries too little of
+/// what a sentence is about to be worth searching on, and a cutaway that
+/// means nothing is worse than no cutaway - it does not decorate the
+/// point, it hides the person making it.
+pub const SHORTEST_WORD: usize = 6;
+
+/// How long the speaker is left alone at the start, in seconds.
+///
+/// Nobody has met the speaker yet. Cutting away from a face before anyone
+/// has looked at it spends the only seconds that decide whether there are
+/// any others - and it is exactly what happened: the first cutaway landed
+/// at three quarters of a second, over the hook.
+pub const SETTLE: f64 = 2.5;
 
 /// One cutaway to find and place.
 #[derive(Clone, PartialEq, Debug)]
@@ -259,6 +275,10 @@ pub fn cues(captions: &[(f64, f64, String)], spacing: f64, length: f64) -> Vec<C
     let mut cues: Vec<Cue> = Vec::new();
     let mut used: Vec<String> = Vec::new();
     for (start, end, text) in lines {
+        // The opening belongs to whoever is talking; see `SETTLE`.
+        if *start < SETTLE {
+            continue;
+        }
         if cues
             .last()
             .is_some_and(|last| *start - last.at < spacing.max(0.1))
@@ -458,24 +478,24 @@ mod tests {
     #[test]
     fn cutaways_are_spaced_out_rather_than_one_a_sentence() {
         let captions = vec![
-            line(0.0, "I bought a motorcycle"),
-            line(2.0, "the weather was terrible"),
-            line(4.0, "we drove to the mountains"),
-            line(20.0, "and the restaurant was closed"),
+            line(3.0, "I bought a motorcycle"),
+            line(5.0, "the weather was terrible"),
+            line(7.0, "we drove to the mountains"),
+            line(23.0, "and the restaurant was closed"),
         ];
         let found = cues(&captions, APART, LENGTH);
         assert_eq!(found.len(), 2, "{found:?}");
-        assert!((found[0].at - 0.0).abs() < 1e-9);
-        assert!((found[1].at - 20.0).abs() < 1e-9);
+        assert!((found[0].at - 3.0).abs() < 1e-9);
+        assert!((found[1].at - 23.0).abs() < 1e-9);
         assert!(found[1].at - found[0].at >= APART);
     }
 
     #[test]
     fn the_same_picture_is_never_asked_for_twice() {
         let captions = vec![
-            line(0.0, "I bought a motorcycle"),
-            line(10.0, "the motorcycle was red"),
-            line(20.0, "and then the restaurant"),
+            line(3.0, "I bought a motorcycle"),
+            line(13.0, "the motorcycle was red"),
+            line(23.0, "and then the restaurant"),
         ];
         let found = cues(&captions, APART, LENGTH);
         assert_eq!(found.len(), 2, "{found:?}");
@@ -495,9 +515,9 @@ mod tests {
     #[test]
     fn captions_in_any_order_come_out_in_time_order() {
         let captions = vec![
-            line(20.0, "and then the restaurant"),
-            line(0.0, "I bought a motorcycle"),
-            line(40.0, "the mountains were quiet"),
+            line(23.0, "and then the restaurant"),
+            line(3.0, "I bought a motorcycle"),
+            line(43.0, "the mountains were quiet"),
         ];
         let found = cues(&captions, APART, LENGTH);
         assert_eq!(found.len(), 3);
@@ -506,11 +526,36 @@ mod tests {
         }
     }
 
+    /// The opening belongs to whoever is talking.
+    #[test]
+    fn nothing_cuts_away_before_the_speaker_has_been_met() {
+        let captions = vec![
+            line(0.5, "I bought a motorcycle"),
+            line(SETTLE + 0.5, "and then the restaurant"),
+        ];
+        let found = cues(&captions, APART, LENGTH);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].at >= SETTLE, "cut away at {}", found[0].at);
+    }
+
+    /// A word too short to mean anything is not searched for.
+    #[test]
+    fn a_short_concrete_noun_is_not_worth_a_picture() {
+        // The one that shipped: "corn" fetched a full-screen photograph of
+        // hazelnuts and laid it over the speaker.
+        assert_eq!(subject_of("a quick jump to get into corn"), None);
+        // While the same sentence with something to picture still works.
+        assert_eq!(
+            subject_of("a quick jump to get into gambling"),
+            Some("gambling".to_owned())
+        );
+    }
+
     #[test]
     fn nothing_to_read_is_no_cutaways_rather_than_a_panic() {
         assert!(cues(&[], APART, LENGTH).is_empty());
-        assert!(cues(&[line(0.0, "and so it was")], APART, LENGTH).is_empty());
+        assert!(cues(&[line(3.0, "and so it was")], APART, LENGTH).is_empty());
         // A spacing of nothing is still a spacing, not a division by zero.
-        assert_eq!(cues(&[line(0.0, "motorcycle")], 0.0, LENGTH).len(), 1);
+        assert_eq!(cues(&[line(3.0, "motorcycle")], 0.0, LENGTH).len(), 1);
     }
 }

@@ -841,6 +841,15 @@ pub struct Studio {
     /// centre's offset from the clip's centre - see `TitleClip::offset`.
     #[allow(clippy::type_complexity)]
     pub title_blocks: HashMap<String, ((u32, u32), (i32, i32))>,
+    /// The clip the watermark was laid as, while this session remembers
+    /// laying it.
+    ///
+    /// Not saved with the project: a watermark reloaded from disk is an
+    /// ordinary picture clip and nothing here needs to know otherwise. It
+    /// is remembered only so that anything laid on a new lane afterwards
+    /// can put it back on top - which is the whole of what a watermark
+    /// means.
+    pub watermark: Option<String>,
     pub drop: Option<DropPlan>,
     pub project_sheet: crate::panes::project::ProjectPane,
     pub captions: crate::panes::captions::CaptionsPane,
@@ -1556,6 +1565,7 @@ impl Studio {
             packages_pending: None,
             last_commit: None,
             title_blocks: HashMap::new(),
+            watermark: None,
             drop: None,
             project_sheet: crate::panes::project::ProjectPane::default(),
             captions: crate::panes::captions::CaptionsPane::default(),
@@ -5469,6 +5479,7 @@ impl Studio {
                         studio.apply(Command::Batch { commands: dissolve });
                     }
                 }
+                studio.raise_watermark();
                 studio.broll.open = false;
                 studio.notify(&tf("{0} cutaways laid", &[&laid]), false);
             },
@@ -5533,6 +5544,7 @@ impl Studio {
                                 ripple: false,
                             });
                         }
+                        studio.raise_watermark();
                     }
                     Err(error) => {
                         log::warn!("b-roll: {error}");
@@ -5653,8 +5665,49 @@ impl Studio {
 
         // Selected, because the next thing anybody does with a watermark is
         // move it.
+        self.watermark = Some(clip_id.clone());
         self.selection = vec![clip_id];
         self.notify(&tf("{0} is on every frame now", &[&name]), false);
+    }
+
+    /// Puts the watermark back on the topmost lane.
+    ///
+    /// A lane is added above every lane there is, so whatever is laid last
+    /// covers everything laid before it - and the cutaways, being laid
+    /// last, were covering the logo. Rather than make the order matter,
+    /// anything that takes a lane calls this afterwards and the mark ends
+    /// up where a mark belongs.
+    ///
+    /// A no-op when this session did not lay one, or when the clip it laid
+    /// is gone.
+    fn raise_watermark(&mut self) {
+        let Some(id) = self.watermark.clone() else {
+            return;
+        };
+        let Some(clip) = self.clip(&id) else {
+            self.watermark = None;
+            return;
+        };
+        let (start, on) = (clip.start, clip.track_id.clone());
+        let top = self
+            .timeline()
+            .tracks
+            .last()
+            .map(|track| track.id.clone())
+            .unwrap_or_default();
+        if top == on {
+            return;
+        }
+        let Some(lane) = self.apply(Command::AddTrack) else {
+            return;
+        };
+        self.apply(Command::MoveClips {
+            moves: vec![ClipMove {
+                clip_id: id,
+                start,
+                track_id: lane,
+            }],
+        });
     }
 
     /// Opacity keys that dissolve a cutaway in and back out.
