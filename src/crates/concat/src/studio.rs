@@ -5733,7 +5733,7 @@ impl Studio {
         }) else {
             return;
         };
-        let landing = self.pop_commands(&[clip_id.clone()]);
+        let landing = self.pop_commands(std::slice::from_ref(&clip_id));
         if !landing.is_empty() {
             self.apply(Command::Batch { commands: landing });
         }
