@@ -1,0 +1,74 @@
+# Objavljuje gotove fajlove iz vec zavrsene izgradnje kao GitHub izdanje.
+#
+# Zasto postoji uz `release.yml`: ono gradi sve ispocetka, sest meta i oko
+# sat vremena. Kad izgradnja ("Proba") vec postoji i fajlovi su tu, nema
+# razloga graditi ponovo - ovo ih samo preuzme unutar GitHuba i objavi.
+# Na vlasnikovu vezu ne padne ni bajt.
+#
+# Pokrece se rucno: Actions -> Izdanje -> Run workflow, pa se upise ID
+# izgradnje (broj iz adrese /actions/runs/<ID>) i oznaka izdanja.
+
+name: Izdanje
+
+on:
+  workflow_dispatch:
+    inputs:
+      izgradnja:
+        description: 'ID izgradnje ciji se fajlovi objavljuju (broj iz adrese)'
+        required: true
+      oznaka:
+        description: 'Oznaka izdanja, npr. v1.0-imperija'
+        required: true
+        default: v1.0-imperija
+
+jobs:
+  objavi:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preuzmi fajlove iz izgradnje
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.izgradnja }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: fajlovi
+
+      - name: Sta je stiglo
+        run: |
+          find fajlovi -type f -printf '%s\t%p\n' | sort -rn | head -40
+          echo "---"
+          du -sh fajlovi
+
+      # Objavljuju se samo Windows i Linux za obicne racunare. macOS trazi
+      # notarizaciju (inace Apple javi da je program nepoznat), a ARM
+      # verzije nemaju publiku medju kupcima.
+      - name: Izdvoji sto se dijeli
+        run: |
+          mkdir -p izdanje
+          find fajlovi -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.AppImage' -o -name '*.deb' \) \
+            | grep -Ei 'x86_64|x64|amd64' \
+            | while read -r f; do cp -v "$f" izdanje/; done
+          ls -la izdanje
+          cd izdanje && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Objavi izdanje
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete "${{ inputs.oznaka }}" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "${{ inputs.oznaka }}" izdanje/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Imperija Studio ${{ inputs.oznaka }}" \
+            --notes "Montaza za TikTok. Raspakujes i pokrenes, bez instalacije.
+
+          Izvorni kod je ovdje; program je nasa verzija [Concata](https://github.com/jub0t/Concat) pod AGPL-3.0 licencom."
+
+      - name: Adrese za sajt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${{ inputs.oznaka }}" --repo "$GITHUB_REPOSITORY" \
+            --json assets -q '.assets[] | "\(.name)\t\(.size/1048576|floor) MB\t\(.url)"'
