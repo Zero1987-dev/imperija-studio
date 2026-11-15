@@ -42,15 +42,15 @@ jobs:
           echo "---"
           du -sh fajlovi
 
-      # Objavljuju se samo Windows i Linux za obicne racunare. macOS trazi
-      # notarizaciju (inace Apple javi da je program nepoznat), a ARM
-      # verzije nemaju publiku medju kupcima.
+      # Windows i Linux za obicne racunare, plus oba Maca (Apple Silicon i
+      # Intel). ARM verzije Windowsa i Linuxa nemaju publiku medju kupcima.
       - name: Izdvoji sto se dijeli
         run: |
           mkdir -p izdanje
           find fajlovi -type f \( -name '*.exe' -o -name '*.msi' -o -name '*.AppImage' -o -name '*.deb' \) \
             | grep -Ei 'x86_64|x64|amd64' \
             | while read -r f; do cp -v "$f" izdanje/; done
+          find fajlovi -type f -name '*.dmg' | while read -r f; do cp -v "$f" izdanje/; done
           ls -la izdanje
           cd izdanje && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
 
